@@ -335,3 +335,40 @@ void DirectXApp::Draw() {
 
     FlushCommandQueue();
 }
+
+void DirectXApp::OnMouseDown(WPARAM btnState, int x, int y)
+{
+    mLastMousePos.x = x;
+    mLastMousePos.y = y;
+    SetCapture(window.GetHandle());
+}
+
+void DirectXApp::OnMouseUp(WPARAM btnState, int x, int y)
+{
+    ReleaseCapture();
+}
+
+void DirectXApp::OnMouseMove(WPARAM btnState, int x, int y)
+{
+    if (btnState & MK_RBUTTON)
+    {
+        float sensitivity = 0.005f;
+        float dx = (x - mLastMousePos.x) * sensitivity;
+        float dy = (y - mLastMousePos.y) * sensitivity;
+
+        mYaw += dx;
+        mPitch += dy;
+
+        if (mPitch > DirectX::XM_PIDIV2 - 0.1f)
+            mPitch = DirectX::XM_PIDIV2 - 0.1f;
+        if (mPitch < -DirectX::XM_PIDIV2 + 0.1f)
+            mPitch = -DirectX::XM_PIDIV2 + 0.1f;
+    }
+
+    mLastMousePos.x = x;
+    mLastMousePos.y = y;
+}
+
+void DirectXApp::OnKeyDown(WPARAM wParam)
+{
+}

@@ -14,6 +14,7 @@
 #include "Window.h"
 #include "Vertex.h"
 #include "ThrowIfFailed.h"
+#include "Timer.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -26,6 +27,17 @@ class DirectXApp {
 
     void Draw();
     void Update();
+
+    void StopTimer() {mTimer.Stop();}
+    void StartTimer() {mTimer.Start();}
+    bool IsPaused() const {return mAppPaused;}
+    Timer& GetTimer() {return mTimer;}
+
+    virtual void OnMouseDown(WPARAM btnState, int x, int y);
+    virtual void OnMouseUp(WPARAM btnState, int x, int y);
+    virtual void OnMouseMove(WPARAM btnState, int x, int y);
+
+    virtual void OnKeyDown(WPARAM wParam);
 
     private:
     Window& window;
@@ -67,6 +79,12 @@ class DirectXApp {
     void BuildRootSignature();
     void BuildShaders();
     void BuildPipelineState();
+
+    Timer mTimer;
+    bool mAppPaused = false;
+    POINT mLastMousePos;
+    float mYaw = 0.0f;
+    float mPitch = 0.0f;
 };
 
 #endif //CG_DX12_DIRECTXAPP_H

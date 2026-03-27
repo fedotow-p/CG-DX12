@@ -19,6 +19,10 @@ file(GLOB SOURCES "src/*.cpp")
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES}
         h/Vertex.h
+        h/Timer.h
+        src/Timer.cpp
+        h/InputDevice.h
+        src/InputDevice.cpp
 )
 
 if(MSVC)
