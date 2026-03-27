@@ -29,7 +29,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance,
             DispatchMessageW(&msg);
         }
         else {
-
+            dxApp.Update();
+            dxApp.Draw();
         }
     }
 

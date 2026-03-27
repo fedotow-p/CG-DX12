@@ -3,6 +3,8 @@
 //
 #include "DirectXApp.h"
 
+
+
 #pragma comment( lib, "d3d12.lib" )
 #pragma comment( lib, "dxgi.lib" )
 
@@ -29,6 +31,10 @@ bool DirectXApp::Initialize() {
     if (!CreateFence()) return false;
     if (!CreateRTVHeap()) return false;
     if (!CreateRenderTargetViews()) return false;
+
+    BuildVertexBuffer();
+    BuildRootSignature();
+    BuildPipelineState();
 
     return true;
 }
@@ -145,3 +151,187 @@ void DirectXApp::FlushCommandQueue() {
     }
 }
 
+void DirectXApp::BuildVertexBuffer() {
+    Vertex vertices[] = {
+        {DirectX::XMFLOAT3(0.0f, 0.5f, 0.0f), DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)},
+        {DirectX::XMFLOAT3(0.5f, -0.5f, 0.0f), DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) },
+        {DirectX::XMFLOAT3(-0.5f, -0.5f, 0.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }
+    };
+
+    UINT vertexBufferSize = sizeof(vertices);
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width = vertexBufferSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&vertexBuffer)));
+
+    void* mappedData;
+    vertexBuffer->Map(0, nullptr, &mappedData);
+    memcpy(mappedData, vertices, vertexBufferSize);
+    vertexBuffer->Unmap(0, nullptr);
+
+    vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
+    vertexBufferView.StrideInBytes = sizeof(Vertex);
+    vertexBufferView.SizeInBytes = vertexBufferSize;
+}
+
+void DirectXApp::BuildRootSignature() {
+    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 0;
+    rootSigDesc.pParameters = nullptr;
+    rootSigDesc.NumStaticSamplers = 0;
+    rootSigDesc.pStaticSamplers = nullptr;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> serializedRootSig;
+    ComPtr<ID3DBlob> errorBlob;
+
+    HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc,
+        D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSig, &errorBlob);
+    ThrowIfFailed(hr);
+
+    hr = device->CreateRootSignature(0, serializedRootSig->GetBufferPointer(),
+        serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
+    ThrowIfFailed(hr);
+}
+
+void DirectXApp::BuildShaders() {
+
+}
+
+void DirectXApp::BuildPipelineState() {
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> pixelShader;
+    ComPtr<ID3DBlob> errorBlob;
+
+    UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+
+    const char* vsCode =
+        "struct VSInput {"
+        "    float3 position : POSITION;"
+        "    float4 color : COLOR;"
+        "};"
+        "struct PSInput {"
+        "    float4 position : SV_POSITION;"
+        "    float4 color : COLOR;"
+        "};"
+        "PSInput VS(VSInput input) {"
+        "    PSInput output;"
+        "    output.position = float4(input.position, 1.0);"
+        "    output.color = input.color;"
+        "    return output;"
+        "}";
+
+    HRESULT hr = D3DCompile(vsCode, strlen(vsCode), nullptr, nullptr, nullptr,
+        "VS", "vs_5_0", compileFlags, 0, &vertexShader, &errorBlob);
+    if (FAILED(hr)) {
+        OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+        ThrowIfFailed(hr);
+    }
+
+    const char* psCode =
+        "struct PSInput {"
+        "    float4 position : SV_POSITION;"
+        "    float4 color : COLOR;"
+        "};"
+        "float4 PS(PSInput input) : SV_TARGET {"
+        "    return input.color;"
+        "}";
+
+    hr = D3DCompile(psCode, strlen(psCode), nullptr, nullptr, nullptr,
+        "PS", "ps_5_0", compileFlags, 0, &pixelShader, &errorBlob);
+    if (FAILED(hr)) {
+        OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+        ThrowIfFailed(hr);
+    }
+
+    D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature = rootSignature.Get();
+    psoDesc.VS = { vertexShader->GetBufferPointer(), vertexShader->GetBufferSize() };
+    psoDesc.PS = { pixelShader->GetBufferPointer(), pixelShader->GetBufferSize() };
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    psoDesc.InputLayout = { inputLayout, 2 };
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    psoDesc.SampleDesc.Count = 1;
+
+    hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState));
+    ThrowIfFailed(hr);
+}
+
+void DirectXApp::Update() {
+
+}
+
+void DirectXApp::Draw() {
+    commandAllocator->Reset();
+    commandList->Reset(commandAllocator.Get(), pipelineState.Get());
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = swapChainBuffer[currentBackBuffer].Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+    commandList->ResourceBarrier(1, &barrier);
+
+    D3D12_VIEWPORT viewport = { 0, 0, (float)window.GetWidth(), (float)window.GetHeight(), 0, 1 };
+    D3D12_RECT scissorRect = { 0, 0, window.GetWidth(), window.GetHeight() };
+    commandList->RSSetViewports(1, &viewport);
+    commandList->RSSetScissorRects(1, &scissorRect);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvHandle.ptr += currentBackBuffer * rtvDescriptorSize;
+
+    float clearColor[] = { 0.2f, 0.2f, 0.2f, 1.0f };
+    commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+
+    commandList->OMSetRenderTargets(1, &rtvHandle, true, nullptr);
+
+    commandList->SetGraphicsRootSignature(rootSignature.Get());
+
+    commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
+    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    commandList->DrawInstanced(3, 1, 0, 0);
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    commandList->ResourceBarrier(1, &barrier);
+
+    commandList->Close();
+
+    ID3D12CommandList* cmdLists[] = { commandList.Get() };
+    commandQueue->ExecuteCommandLists(1, cmdLists);
+
+    swapChain->Present(1, 0);
+    currentBackBuffer = (currentBackBuffer + 1) % BufferCount;
+
+    FlushCommandQueue();
+}

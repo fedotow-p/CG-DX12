@@ -8,7 +8,11 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
+#include <d3dcompiler.h>
+#include <DirectXMath.h>
+#include <d3dx12.h>
 #include "Window.h"
+#include "Vertex.h"
 #include "ThrowIfFailed.h"
 
 using Microsoft::WRL::ComPtr;
@@ -19,6 +23,9 @@ class DirectXApp {
     ~DirectXApp();
 
     bool Initialize();
+
+    void Draw();
+    void Update();
 
     private:
     Window& window;
@@ -49,6 +56,17 @@ class DirectXApp {
     bool CreateRTVHeap();
     bool CreateRenderTargetViews();
     void FlushCommandQueue();
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> vertexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
+
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineState;
+
+    void BuildVertexBuffer();
+    void BuildRootSignature();
+    void BuildShaders();
+    void BuildPipelineState();
 };
 
 #endif //CG_DX12_DIRECTXAPP_H
