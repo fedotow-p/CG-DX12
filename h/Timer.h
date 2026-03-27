@@ -1,23 +1,18 @@
-//
-// Created by elm on 27.03.2026.
-//
-
-#ifndef CG_DX12_TIMER_H
-#define CG_DX12_TIMER_H
+﻿#pragma once
 
 class Timer {
-    public:
+public:
     Timer();
 
-    float TotalTime() const;
-    float DeltaTime() const;
+    float TotalTime() const; // in seconds
+    float DeltaTime() const; // in seconds
 
-    void Reset();
-    void Start();
-    void Stop();
-    void Tick();
+    void Reset(); // Call before message loop.
+    void Start(); // Call when unpaused.
+    void Stop();  // Call when paused.
+    void Tick();  // Call every frame.
 
-    private:
+private:
     double mSecondsPerCount;
     double mDeltaTime;
 
@@ -29,5 +24,3 @@ class Timer {
 
     bool mStopped;
 };
-
-#endif //CG_DX12_TIMER_H

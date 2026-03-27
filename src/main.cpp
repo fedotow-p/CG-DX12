@@ -1,38 +1,37 @@
-//
-// Created by elm on 26.03.2026.
-//
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "Window.h"
-#include "DirectXApp.h"
+#include "../h/DirectXApp.h"
+#include "../h/Window.h"
+
+#pragma comment(linker, "/SUBSYSTEM:WINDOWS")
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE hPrevInstance,
     _In_ LPSTR lpCmdLine,
     _In_ int nCmdShow) {
+    
+    (void)hPrevInstance;
+    (void)lpCmdLine;
 
+    // 1. Создаем окно
     Window window(hInstance, nCmdShow);
-    if (!window.Initialize(L"DirectX12 Window", 800, 600)) {
+    if (!window.Initialize(L"DirectX 12 Lab", 800, 600)) {
+        MessageBox(NULL, L"Failed to create window", L"Error", MB_OK);
         return 1;
     }
 
+    // 2. Создаем DirectX приложение
     DirectXApp dxApp(window);
-    if (!dxApp.Initialize()) {
-        MessageBox(NULL, L"DirectX Initialization Failed", L"Error", MB_OK);
+
+    // 3. Связываем окно и DirectXApp (для обработки сообщений)
+    window.SetDirectXApp(&dxApp);
+
+    // 4. Инициализируем DirectX
+    if (!dxApp.InitializeApp()) {
+        MessageBox(NULL, L"DirectX initialization failed", L"Error", MB_OK);
         return 1;
     }
 
-    MSG msg = {};
-    while (msg.message != WM_QUIT) {
-        if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        else {
-            dxApp.Update();
-            dxApp.Draw();
-        }
-    }
-
-    return static_cast<int>(msg.wParam);
+    // 5. Запускаем главный цикл приложения
+    return dxApp.Run();
 }
