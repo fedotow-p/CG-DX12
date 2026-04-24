@@ -145,6 +145,7 @@ void DirectXApp::OnMouseMove(WPARAM btnState, int x, int y)
 }
 
 // =========== Input Layout ===========
+//Вершинные атрибуты
 void DirectXApp::BuildInputLayout()
 {
     mInputLayout =
@@ -236,7 +237,7 @@ void DirectXApp::BuildRootSignature()
     srvRange.RegisterSpace = 0;
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParameters[2];
+    D3D12_ROOT_PARAMETER rootParameters[3];
 
     // Slot 0 → CBV
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -250,18 +251,30 @@ void DirectXApp::BuildRootSignature()
     rootParameters[1].DescriptorTable.pDescriptorRanges = &srvRange;
     rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // Slot 2 → isFlag
+    rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[2].Constants.Num32BitValues = 1;
+    rootParameters[2].Constants.ShaderRegister = 1;  // b1
+    rootParameters[2].Constants.RegisterSpace = 0;
+    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
     // ===== Static Sampler (s0)
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MipLODBias = 0;
+    sampler.MaxAnisotropy = 16;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    sampler.MinLOD = 0;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
     sampler.ShaderRegister = 0;
     sampler.RegisterSpace = 0;
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 2;
+    rootSigDesc.NumParameters = 3;
     rootSigDesc.pParameters = rootParameters;
     rootSigDesc.NumStaticSamplers = 1;
     rootSigDesc.pStaticSamplers = &sampler;
@@ -271,11 +284,20 @@ void DirectXApp::BuildRootSignature()
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
     ComPtr<ID3DBlob> errorBlob = nullptr;
 
-    ThrowIfFailed(D3D12SerializeRootSignature(
+    HRESULT hr = D3D12SerializeRootSignature(
         &rootSigDesc,
-        D3D_ROOT_SIGNATURE_VERSION_1,
-        serializedRootSig.GetAddressOf(),
-        errorBlob.GetAddressOf()));
+        D3D_ROOT_SIGNATURE_VERSION_1_0,
+        &serializedRootSig,
+        &errorBlob);
+
+    if (FAILED(hr))
+    {
+        if (errorBlob)
+        {
+            MessageBoxA(NULL, (char*)errorBlob->GetBufferPointer(), "Root Signature Error", MB_OK);
+        }
+        ThrowIfFailed(hr);
+    }
 
     ThrowIfFailed(device->CreateRootSignature(
         0,
@@ -701,7 +723,9 @@ bool DirectXApp::CreateSwapChain() {
 
     return true;
 }
-
+//RTV- Render target view
+//DSV - Depth Stencil View
+//CBR_SRV_UAV - Constant buffer, Shader resource, Unordered Acces view
 void DirectXApp::QueryDescriptorSizes() {
     mRtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     mDsvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -769,7 +793,7 @@ bool DirectXApp::CreateRenderTargetViews() {
 
     return true;
 }
-
+//Буфер глубины
 bool DirectXApp::CreateDepthStencilBuffer() {
     D3D12_RESOURCE_DESC depthStencilDesc = {};
     depthStencilDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -814,7 +838,7 @@ bool DirectXApp::CreateDepthStencilBuffer() {
 
     return true;
 }
-
+//Область отображения
 void DirectXApp::CreateViewportAndScissor() {
     mScreenViewport.TopLeftX = 0.0f;
     mScreenViewport.TopLeftY = 0.0f;
@@ -873,6 +897,10 @@ bool DirectXApp::Initialize() {
         Material mat;
         mat.Name = p.Name;
         mat.SrvHeapIndex = srvIndex++;
+
+        std::string lower = p.Name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), tolower);
+        mat.isFlag = (lower.find("fabric") != std::string::npos );
 
         if (!p.DiffuseMap.empty())
         {
@@ -1010,7 +1038,6 @@ void DirectXApp::CalculateFrameStats() {
         }
         windowText += L" FPS: " + std::to_wstring(fps);
         windowText += L" MSPF: " + std::to_wstring(mspf);
-        windowText += L" (Press SPACE to switch modes)";
 
         SetWindowText(window.GetHandle(), windowText.c_str());
 
@@ -1105,7 +1132,13 @@ void DirectXApp::Update(const Timer& gt)
     XMMATRIX world = XMMatrixIdentity();
     XMMATRIX worldViewProj = world * view * proj;
 
+    static float time = 0;
+    time += gt.DeltaTime();
+
     ObjectConstants objConstants;
+    objConstants.mTime = XMFLOAT4(time, 0, 0, 0);
+
+
     XMStoreFloat4x4(&objConstants.mWorldViewProj,
         XMMatrixTranspose(worldViewProj));
 
@@ -1202,6 +1235,9 @@ void DirectXApp::Draw(const Timer& gt)
         srvHandle.ptr += (1 + mat->SrvHeapIndex) * mCbvSrvUavDescriptorSize;
 
         mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
+
+        float isFlag = mat->isFlag ? 1.0f : 0.0f;
+        mCommandList->SetGraphicsRoot32BitConstant(2, *(UINT*)&isFlag, 0);
 
         // 🎨 Нарисовать только этот submesh
         mCommandList->DrawIndexedInstanced(
@@ -1370,11 +1406,12 @@ void DirectXApp::CreateColorTexture(
     const DirectX::XMFLOAT3& color,
     Microsoft::WRL::ComPtr<ID3D12Resource>& texture)
 {
-    UINT r = (UINT)(color.x * 255.0f);
-    UINT g = (UINT)(color.y * 255.0f);
-    UINT b = (UINT)(color.z * 255.0f);
+    BYTE b = (BYTE)(color.x * 255.0f);
+    BYTE g = (BYTE)(color.y * 255.0f);
+    BYTE r = (BYTE)(color.z * 255.0f);
+    BYTE a = 255;
 
-    UINT pixel = (255 << 24) | (b << 16) | (g << 8) | r;
+    UINT pixel = (a << 24) | (r << 16) | (g << 8) | b;
 
     // ---- TEXTURE (DEFAULT heap) ----
     D3D12_RESOURCE_DESC texDesc = {};

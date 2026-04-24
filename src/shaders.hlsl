@@ -5,6 +5,7 @@ cbuffer cbPerObject : register(b0)
 {
     float4x4 mWorldViewProj;
     float4 mUVTransform;  // x = scaleU, y = scaleV, z = offsetU, w = offsetV
+    float4 mTime;
 };
 
 struct VSInput
@@ -16,15 +17,28 @@ struct VSInput
 
 struct PSInput
 {
-    float4 PosH : SV_POSITION;
+    float4 PosH : SV_POSITION; //SYstem value pos
     float2 TexC : TEXCOORD;
 };
+
+float gIsFlag : register(b1);
 
 PSInput VS(VSInput vin)
 {
     PSInput vout;
-    vout.PosH = mul(float4(vin.Pos, 1.0f), mWorldViewProj);
 
+    float3 modifiedPos = vin.Pos;
+
+    if (gIsFlag > 0.5f)
+    {
+        float wave = sin(vin.Pos.x * 3.0f - mTime.x * 4.0f);
+        modifiedPos.z += wave * 0.03f;
+
+        float waveY = sin(vin.Pos.x * 5.0f - mTime.x * 3.0f) * 0.02f;
+        modifiedPos.y += waveY;
+    }
+
+    vout.PosH = mul(float4(modifiedPos, 1.0f), mWorldViewProj);
     vout.TexC = vin.Tex * mUVTransform.xy + mUVTransform.zw;
 
     return vout;

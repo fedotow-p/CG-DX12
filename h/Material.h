@@ -8,8 +8,10 @@ struct Material
 {
     std::string Name;
 
-    std::string DiffuseMap;      // имя .tga файла
-    UINT SrvHeapIndex = 0;       // индекс SRV в куче
+    std::string DiffuseMap;      // пїЅпїЅпїЅ .tga пїЅпїЅпїЅпїЅпїЅ
+    UINT SrvHeapIndex = 0;       // пїЅпїЅпїЅпїЅпїЅпїЅ SRV пїЅ пїЅпїЅпїЅпїЅ
+    bool isFlag = false;
+
 
     Microsoft::WRL::ComPtr<ID3D12Resource> DiffuseTexture;
 };

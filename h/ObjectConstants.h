@@ -5,6 +5,7 @@ struct ObjectConstants
 {
     DirectX::XMFLOAT4X4 mWorldViewProj;
     DirectX::XMFLOAT4 mUVTransform;
+    DirectX::XMFLOAT4 mTime;
 
     ObjectConstants()
     {
