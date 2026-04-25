@@ -3,6 +3,21 @@
 #include "../h/d3dUtil.h"
 #include "../h/ThrowIfFailed.h"
 #include <DirectXMath.h>
+#include <algorithm>
+#include <cctype>
+
+namespace
+{
+bool IsAnimatedFlagMaterial(const Material& material)
+{
+    std::string name = material.Name;
+    std::transform(name.begin(), name.end(), name.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    return name == "fabric"
+        || name.rfind("fabric_", 0) == 0;
+}
+}
 
 RenderingSystem::RenderingSystem(
     ID3D12Device* device,
@@ -344,6 +359,9 @@ void RenderingSystem::GeometryPass(
         // Проверяем, нужно ли использовать secondary texture
         bool isFloor = (mat->Name.find("floor") != std::string::npos);
         mCommandList->SetGraphicsRootDescriptorTable(2, isFloor ? srvHandle2 : srvHandle1);
+
+        const float isFlag = IsAnimatedFlagMaterial(*mat) ? 1.0f : 0.0f;
+        mCommandList->SetGraphicsRoot32BitConstant(3, *reinterpret_cast<const UINT*>(&isFlag), 0);
 
         mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
     }

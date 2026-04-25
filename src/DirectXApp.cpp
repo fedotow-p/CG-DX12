@@ -10,6 +10,8 @@
 #include "../h/TgaLoader.h"
 #include "../h/d3dUtil.h"
 #include "../h/GBuffer.h"
+#include <algorithm>
+#include <cctype>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -167,7 +169,7 @@ void DirectXApp::BuildRootSignature()
     srvRange2.RegisterSpace = 0;
     srvRange2.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParameters[3];
+    D3D12_ROOT_PARAMETER rootParameters[4];
 
     // Slot 0 → CBV
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -187,6 +189,13 @@ void DirectXApp::BuildRootSignature()
     rootParameters[2].DescriptorTable.pDescriptorRanges = &srvRange2;
     rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // Slot 3 → isFlag (b1)
+    rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[3].Constants.Num32BitValues = 1;
+    rootParameters[3].Constants.ShaderRegister = 1;
+    rootParameters[3].Constants.RegisterSpace = 0;
+    rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
     // Static Sampler (s0)
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -198,7 +207,7 @@ void DirectXApp::BuildRootSignature()
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 3;
+    rootSigDesc.NumParameters = 4;
     rootSigDesc.pParameters = rootParameters;
     rootSigDesc.NumStaticSamplers = 1;
     rootSigDesc.pStaticSamplers = &sampler;
@@ -1086,12 +1095,15 @@ void DirectXApp::Update(const Timer& gt)
     // ===== WVP и UV Transform =====
     XMMATRIX world = XMMatrixIdentity();
     XMMATRIX worldViewProj = world * view * proj;
+    static float animationTime = 0.0f;
+    animationTime += dt;
 
     ObjectConstants objConstants;
     XMStoreFloat4x4(&objConstants.mWorld, XMMatrixTranspose(world));
     XMStoreFloat4x4(&objConstants.mWorldViewProj, XMMatrixTranspose(worldViewProj));
     objConstants.mUVTransform = XMFLOAT4(mUVScaleU, mUVScaleV, mUVOffsetU, mUVOffsetV);
     objConstants.mChessboardParams = XMFLOAT4(mChessTileSize, 0, 0, 0);
+    objConstants.mTime = XMFLOAT4(animationTime, 0.0f, 0.0f, 0.0f);
     mObjectCB->CopyData(0, objConstants);
 
     objConstants.mUVTransform.x = mUVScaleU;

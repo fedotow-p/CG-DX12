@@ -7,6 +7,7 @@ struct ObjectConstants
     DirectX::XMFLOAT4X4 mWorldViewProj;
     DirectX::XMFLOAT4 mUVTransform;
     DirectX::XMFLOAT4 mChessboardParams;
+    DirectX::XMFLOAT4 mTime;
 
     ObjectConstants()
     {
@@ -14,5 +15,6 @@ struct ObjectConstants
         DirectX::XMStoreFloat4x4(&mWorld, DirectX::XMMatrixIdentity());
         mUVTransform = DirectX::XMFLOAT4(1.0f, 1.0f, 0.0f, 0.0f);
         mChessboardParams = DirectX::XMFLOAT4(1.0f, 15.0f, 0.0f, 0.0f);
+        mTime = DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 };
