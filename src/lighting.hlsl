@@ -79,8 +79,8 @@ float4 PS(PSInput pin) : SV_Target
 
     float3 viewDir = normalize(mCameraPos - worldPos);
     // Проверка на фон (по глубине)
-    if (depth > 0.99999f)  // или другое значение для бесконечности
-        return float4(0, 0, 0, 0);
+    if (depth > 0.99999f)
+        return float4(0.53f, 0.81f, 0.98f, 1.0f);
 
     float3 result = float3(0, 0, 0);
 

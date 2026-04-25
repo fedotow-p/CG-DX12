@@ -825,45 +825,45 @@ bool DirectXApp::Initialize() {
     mLights.clear();
 
     // 1. Ambient
-    mLights.push_back(Light::CreateAmbientLight(DirectX::XMFLOAT3(0.1f, 0.1f, 0.01f)));
+    mLights.push_back(Light::CreateAmbientLight(XMFLOAT3(0.15f, 0.12f, 0.10f)));
 
-    // 2. Spot light 1
-    mLights.push_back(Light::CreateSpotLight(
-        DirectX::XMFLOAT3(0.0f, -2.0f, 0.0f),
-        DirectX::XMFLOAT3(0.3f, 0.5f, 1.0f),
-        DirectX::XMFLOAT3(0.3f, 0.5f, 1.0f),
-        2.5f,
-        12.0f,
-        XM_PIDIV4));
-
-    // 3. Spot light 2
-    mLights.push_back(Light::CreateSpotLight(
-        DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f),
-        DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f),
-        DirectX::XMFLOAT3(1.0f, 0.0f, 0.0f),
-        15.0f,
-        60.0f,
-        XM_PIDIV2));
-
-    // 4. Point light 1
-    mLights.push_back(Light::CreatePointLight(
-        DirectX::XMFLOAT3(5.0f, 3.0f, 0.0f),
-        DirectX::XMFLOAT3(0.3f, 1.0f, 0.3f),
-        3.0f,
-        5.0f));
-
-    // 5. Directional light
     mLights.push_back(Light::CreateDirectionalLight(
-        DirectX::XMFLOAT3(0.5f, -1.0f, 0.3f),
-        DirectX::XMFLOAT3(1.0f, 0.95f, 0.9f),
-        1.0f));
+    XMFLOAT3(0.8f, -1.0f, 0.4f),
+    XMFLOAT3(1.0f, 0.92f, 0.85f),
+    1.2f));
 
-    // 6. Point light 2
     mLights.push_back(Light::CreatePointLight(
-        DirectX::XMFLOAT3(3.0f, 2.0f, 2.0f),
-        DirectX::XMFLOAT3(1.0f, 1.0f, 0.0f),
-        2.5f,
-        12.0f));
+    XMFLOAT3(0.0f, 1.5f, 0.0f),
+    XMFLOAT3(1.0f, 0.7f, 0.3f),
+    2.5f,
+    8.0f));
+
+    mLights.push_back(Light::CreatePointLight(
+    XMFLOAT3(-4.0f, 2.0f, 2.0f),
+    XMFLOAT3(0.3f, 0.5f, 1.0f),
+    2.0f,
+    10.0f));
+
+    mLights.push_back(Light::CreatePointLight(
+    XMFLOAT3(4.0f, 1.5f, -1.0f),
+    XMFLOAT3(1.0f, 0.5f, 0.2f),
+    2.0f,
+    9.0f));
+
+    mLights.push_back(Light::CreateSpotLight(
+    XMFLOAT3(0.0f, 5.0f, -5.0f),
+    XMFLOAT3(0.0f, -0.8f, 0.5f),
+    XMFLOAT3(1.0f, 0.9f, 0.7f),
+    3.0f,
+    15.0f,
+    60));
+
+    mLights.push_back(Light::CreatePointLight(
+    XMFLOAT3(2.0f, 4.0f, 3.0f),
+    XMFLOAT3(0.8f, 0.8f, 1.0f),
+    1.5f,
+    12.0f));
+
     mLightingCB = std::make_unique<UploadBuffer<LightConstants>>(
         device.Get(),
         (UINT)mLights.size(),
