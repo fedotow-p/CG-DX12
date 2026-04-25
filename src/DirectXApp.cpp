@@ -1,6 +1,7 @@
 ﻿#include "../h/DirectXApp.h"
 #include <DirectXMath.h>
 #include <d3d12.h>
+#include "../h/d3dx12.h"
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <string>
@@ -8,6 +9,7 @@
 #include "../h/Parser.h"
 #include "../h/TgaLoader.h"
 #include "../h/d3dUtil.h"
+#include "../h/GBuffer.h"
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -15,92 +17,13 @@
 
 using namespace DirectX;
 
-struct CD3DX12_RESOURCE_BARRIER_HELPER {
-    static D3D12_RESOURCE_BARRIER Transition(
-        _In_ ID3D12Resource* pResource,
-        D3D12_RESOURCE_STATES stateBefore,
-        D3D12_RESOURCE_STATES stateAfter,
-        UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES)
-    {
-        D3D12_RESOURCE_BARRIER barrier = {};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        barrier.Transition.pResource = pResource;
-        barrier.Transition.StateBefore = stateBefore;
-        barrier.Transition.StateAfter = stateAfter;
-        barrier.Transition.Subresource = subresource;
-        return barrier;
-    }
-};
-
-struct CD3DX12_DEFAULT {};
-extern const DECLSPEC_SELECTANY CD3DX12_DEFAULT D3D12_DEFAULT;
-
-struct CD3DX12_RASTERIZER_DESC : public D3D12_RASTERIZER_DESC
-{
-    CD3DX12_RASTERIZER_DESC() = default;
-    explicit CD3DX12_RASTERIZER_DESC(const D3D12_RASTERIZER_DESC& o) : D3D12_RASTERIZER_DESC(o) {}
-    explicit CD3DX12_RASTERIZER_DESC(CD3DX12_DEFAULT)
-    {
-        FillMode = D3D12_FILL_MODE_SOLID;
-        CullMode = D3D12_CULL_MODE_BACK;
-        FrontCounterClockwise = FALSE;
-        DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-        DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-        SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-        DepthClipEnable = TRUE;
-        MultisampleEnable = FALSE;
-        AntialiasedLineEnable = FALSE;
-        ForcedSampleCount = 0;
-        ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-    }
-};
-
-struct CD3DX12_BLEND_DESC : public D3D12_BLEND_DESC
-{
-    CD3DX12_BLEND_DESC() = default;
-    explicit CD3DX12_BLEND_DESC(const D3D12_BLEND_DESC& o) : D3D12_BLEND_DESC(o) {}
-    explicit CD3DX12_BLEND_DESC(CD3DX12_DEFAULT)
-    {
-        AlphaToCoverageEnable = FALSE;
-        IndependentBlendEnable = FALSE;
-        const D3D12_RENDER_TARGET_BLEND_DESC defaultRenderTargetBlendDesc =
-        {
-            FALSE,FALSE,
-            D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
-            D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
-            D3D12_LOGIC_OP_NOOP,
-            D3D12_COLOR_WRITE_ENABLE_ALL,
-        };
-        for (UINT i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
-            RenderTarget[i] = defaultRenderTargetBlendDesc;
-    }
-};
-
-struct CD3DX12_DEPTH_STENCIL_DESC : public D3D12_DEPTH_STENCIL_DESC
-{
-    CD3DX12_DEPTH_STENCIL_DESC() = default;
-    explicit CD3DX12_DEPTH_STENCIL_DESC(const D3D12_DEPTH_STENCIL_DESC& o) : D3D12_DEPTH_STENCIL_DESC(o) {}
-    explicit CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT)
-    {
-        DepthEnable = TRUE;
-        DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-        DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-        StencilEnable = FALSE;
-        StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
-        StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
-        const D3D12_DEPTH_STENCILOP_DESC defaultStencilOp =
-        { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_ALWAYS };
-        FrontFace = defaultStencilOp;
-        BackFace = defaultStencilOp;
-    }
-};
 
 DirectXApp::DirectXApp(Window& window) : window(window)
 {
     XMStoreFloat4x4(&mWorld, XMMatrixIdentity());
     XMStoreFloat4x4(&mView, XMMatrixIdentity());
     XMStoreFloat4x4(&mProj, XMMatrixIdentity());
+    mRenderingSystem = nullptr;
 }
 
 DirectXApp::~DirectXApp() {
@@ -145,7 +68,6 @@ void DirectXApp::OnMouseMove(WPARAM btnState, int x, int y)
 }
 
 // =========== Input Layout ===========
-//Вершинные атрибуты
 void DirectXApp::BuildInputLayout()
 {
     mInputLayout =
@@ -178,7 +100,7 @@ void DirectXApp::BuildShaders()
         "ps_5_0"
     );
 
-    MessageBox(NULL, L"SUCCESS! Shaders compiled", L"Info", MB_OK);
+    //MessageBox(NULL, L"SUCCESS! Shaders compiled", L"Info", MB_OK);
 }
 
 // =========== CBV ===========
@@ -215,13 +137,13 @@ void DirectXApp::BuildConstantBuffer()
     D3D12_CPU_DESCRIPTOR_HANDLE cbvHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
     device->CreateConstantBufferView(&cbvDesc, cbvHandle);
 
-    MessageBox(NULL, L"Constant buffer and CBV created", L"Info", MB_OK);
+    //MessageBox(NULL, L"Constant buffer and CBV created", L"Info", MB_OK);
 }
 
 // =========== Root Signature ===========
 void DirectXApp::BuildRootSignature()
 {
-    // ===== CBV range (b0)
+    // CBV range (b0)
     D3D12_DESCRIPTOR_RANGE cbvRange = {};
     cbvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
     cbvRange.NumDescriptors = 1;
@@ -229,13 +151,21 @@ void DirectXApp::BuildRootSignature()
     cbvRange.RegisterSpace = 0;
     cbvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    // ===== SRV range (t0)
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;
-    srvRange.RegisterSpace = 0;
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    // SRV range for texture1 (t0)
+    D3D12_DESCRIPTOR_RANGE srvRange1 = {};
+    srvRange1.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange1.NumDescriptors = 1;
+    srvRange1.BaseShaderRegister = 0;
+    srvRange1.RegisterSpace = 0;
+    srvRange1.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    // SRV range for texture2 (t1)
+    D3D12_DESCRIPTOR_RANGE srvRange2 = {};
+    srvRange2.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange2.NumDescriptors = 1;
+    srvRange2.BaseShaderRegister = 1;
+    srvRange2.RegisterSpace = 0;
+    srvRange2.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     D3D12_ROOT_PARAMETER rootParameters[3];
 
@@ -245,30 +175,24 @@ void DirectXApp::BuildRootSignature()
     rootParameters[0].DescriptorTable.pDescriptorRanges = &cbvRange;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Slot 1 → SRV
+    // Slot 1 → SRV for texture1 (t0)
     rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    rootParameters[1].DescriptorTable.pDescriptorRanges = &srvRange;
+    rootParameters[1].DescriptorTable.pDescriptorRanges = &srvRange1;
     rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // Slot 2 → isFlag
-    rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParameters[2].Constants.Num32BitValues = 1;
-    rootParameters[2].Constants.ShaderRegister = 1;  // b1
-    rootParameters[2].Constants.RegisterSpace = 0;
-    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    // Slot 2 → SRV for texture2 (t1)
+    rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[2].DescriptorTable.pDescriptorRanges = &srvRange2;
+    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // ===== Static Sampler (s0)
+    // Static Sampler (s0)
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MipLODBias = 0;
-    sampler.MaxAnisotropy = 16;
-    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    sampler.MinLOD = 0;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
     sampler.ShaderRegister = 0;
     sampler.RegisterSpace = 0;
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -278,32 +202,32 @@ void DirectXApp::BuildRootSignature()
     rootSigDesc.pParameters = rootParameters;
     rootSigDesc.NumStaticSamplers = 1;
     rootSigDesc.pStaticSamplers = &sampler;
-    rootSigDesc.Flags =
-        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
     ComPtr<ID3DBlob> errorBlob = nullptr;
 
     HRESULT hr = D3D12SerializeRootSignature(
         &rootSigDesc,
-        D3D_ROOT_SIGNATURE_VERSION_1_0,
-        &serializedRootSig,
-        &errorBlob);
+        D3D_ROOT_SIGNATURE_VERSION_1,
+        serializedRootSig.GetAddressOf(),
+        errorBlob.GetAddressOf());
 
-    if (FAILED(hr))
-    {
-        if (errorBlob)
-        {
-            MessageBoxA(NULL, (char*)errorBlob->GetBufferPointer(), "Root Signature Error", MB_OK);
-        }
-        ThrowIfFailed(hr);
+    if (FAILED(hr)) {
+        MessageBoxA(NULL, "Failed to serialize root signature", "Error", MB_OK);
+        return;
     }
 
-    ThrowIfFailed(device->CreateRootSignature(
+    hr = device->CreateRootSignature(
         0,
         serializedRootSig->GetBufferPointer(),
         serializedRootSig->GetBufferSize(),
-        IID_PPV_ARGS(&mRootSignature)));
+        IID_PPV_ARGS(&mRootSignature));
+
+    if (FAILED(hr)) {
+        MessageBoxA(NULL, "Failed to create root signature", "Error", MB_OK);
+        return;
+    }
 }
 
 // =========== PSO (Pipeline State Object) ===========
@@ -368,8 +292,10 @@ void DirectXApp::BuildPSO()
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 
     // 9. Render Targets
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = mBackBufferFormat;
+    psoDesc.NumRenderTargets = 3;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;      // Albedo
+    psoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT; // Normal
+    psoDesc.RTVFormats[2] = DXGI_FORMAT_R32_FLOAT;
 
     // 10. Формат Depth/Stencil
     psoDesc.DSVFormat = mDepthStencilFormat;
@@ -385,73 +311,13 @@ void DirectXApp::BuildPSO()
         return;
     }
 
-    MessageBox(NULL, L"PSO created successfully (Solid Mode)", L"Info", MB_OK);
+    //MessageBox(NULL, L"PSO created successfully (Solid Mode)", L"Info", MB_OK);
 }
 
-// =========== Wireframe PSO ===========
-void DirectXApp::BuildWireframePSO()
-{
-    // Создаем описание PSO для проволочного каркаса
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC wireframePsoDesc;
-    ZeroMemory(&wireframePsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
-
-    // 1. Шейдеры (те же самые)
-    wireframePsoDesc.VS = {
-        reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),
-        mvsByteCode->GetBufferSize()
-    };
-    wireframePsoDesc.PS = {
-        reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()),
-        mpsByteCode->GetBufferSize()
-    };
-
-    // 2. Input Layout
-    wireframePsoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
-
-    // 3. Корневая сигнатура
-    wireframePsoDesc.pRootSignature = mRootSignature.Get();
-
-    // 4. Растеризатор - НАСТРОЙКА ДЛЯ ПРОВОЛОЧНОГО КАРКАСА
-    wireframePsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    wireframePsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;  // ПРОВОЛОЧНЫЙ КАРКАС
-    wireframePsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;       // БЕЗ ОБРЕЗКИ
-
-    // 5. Blend State
-    wireframePsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-
-    // 6. Depth/Stencil State
-    wireframePsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-
-    // 7. Sample Mask
-    wireframePsoDesc.SampleMask = UINT_MAX;
-
-    // 8. Примитивы
-    wireframePsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-    // 9. Render Targets
-    wireframePsoDesc.NumRenderTargets = 1;
-    wireframePsoDesc.RTVFormats[0] = mBackBufferFormat;
-
-    // 10. Формат Depth/Stencil
-    wireframePsoDesc.DSVFormat = mDepthStencilFormat;
-
-    // 11. Multisampling
-    wireframePsoDesc.SampleDesc.Count = 1;
-    wireframePsoDesc.SampleDesc.Quality = 0;
-
-    // 12. Создание PSO
-    HRESULT hr = device->CreateGraphicsPipelineState(&wireframePsoDesc, IID_PPV_ARGS(&mWireframePSO));
-    if (FAILED(hr)) {
-        MessageBox(NULL, L"Failed to create Wireframe PSO", L"Error", MB_OK);
-        return;
-    }
-
-    MessageBox(NULL, L"Wireframe PSO created successfully", L"Info", MB_OK);
-}
 // =========== Остальные методы ===========
 void DirectXApp::BuildObj(const std::string& path)
 {
-    MessageBoxA(nullptr, "BuildObj called", "DEBUG", MB_OK);
+    //MessageBoxA(nullptr, "BuildObj called", "DEBUG", MB_OK);
 
     // Очистить старые данные
     mSubmeshes.clear();
@@ -539,8 +405,17 @@ void DirectXApp::Shutdown() {
 
     // Освобождаем PSO
     mPSO.Reset();
-    mWireframePSO.Reset();
     mRootSignature.Reset();
+
+    if (mRenderingSystem)
+    {
+        mRenderingSystem->Shutdown();
+        mRenderingSystem.reset();
+    }
+
+
+    // Освобождаем constant buffers
+    mObjectCB.reset();
 
     for (int i = 0; i < SwapChainBufferCount; i++) {
         mSwapChainBuffer[i].Reset();
@@ -612,7 +487,7 @@ bool DirectXApp::CreateD3DDevice() {
             MessageBox(NULL, L"No hardware adapter found and WARP failed", L"Error", MB_OK);
             return false;
         }
-        MessageBox(NULL, L"Using WARP software adapter", L"Info", MB_OK);
+        //MessageBox(NULL, L"Using WARP software adapter", L"Info", MB_OK);
     }
 
     HRESULT hr = D3D12CreateDevice(
@@ -723,9 +598,7 @@ bool DirectXApp::CreateSwapChain() {
 
     return true;
 }
-//RTV- Render target view
-//DSV - Depth Stencil View
-//CBR_SRV_UAV - Constant buffer, Shader resource, Unordered Acces view
+
 void DirectXApp::QueryDescriptorSizes() {
     mRtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     mDsvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -793,7 +666,7 @@ bool DirectXApp::CreateRenderTargetViews() {
 
     return true;
 }
-//Буфер глубины
+
 bool DirectXApp::CreateDepthStencilBuffer() {
     D3D12_RESOURCE_DESC depthStencilDesc = {};
     depthStencilDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -838,7 +711,7 @@ bool DirectXApp::CreateDepthStencilBuffer() {
 
     return true;
 }
-//Область отображения
+
 void DirectXApp::CreateViewportAndScissor() {
     mScreenViewport.TopLeftX = 0.0f;
     mScreenViewport.TopLeftY = 0.0f;
@@ -856,36 +729,30 @@ void DirectXApp::SetViewportAndScissor() {
 }
 
 bool DirectXApp::Initialize() {
-    #if defined(_DEBUG)
+#if defined(_DEBUG)
+    {
+        ComPtr<ID3D12Debug> debugController;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
         {
-            ComPtr<ID3D12Debug> debugController;
-            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
-            {
-                debugController->EnableDebugLayer();
-            }
+            debugController->EnableDebugLayer();
         }
-    #endif
-    MessageBox(NULL, L"Starting DirectX 12 initialization...", L"Info", MB_OK);
+    }
+#endif
+    //MessageBox(NULL, L"Starting DirectX 12 initialization...", L"Info", MB_OK);
 
-    // Основные этапы инициализации
     if (!CreateDXGIFactory()) return false;
     if (!CreateD3DDevice()) return false;
     if (!CreateCommandObjects()) return false;
     if (!CreateFence()) return false;
     if (!CreateSwapChain()) return false;
-
     QueryDescriptorSizes();
-
     if (!CreateDescriptorHeaps()) return false;
     if (!CreateRenderTargetViews()) return false;
     if (!CreateDepthStencilBuffer()) return false;
-
     CreateViewportAndScissor();
 
-   //Геометрия и ресурсы
+    //Геометрия и ресурсы
     BuildInputLayout();
-   //BuildVertexBuffer();
-   //BuildIndexBuffer();
     BuildObj("../assets/sponza.obj");
     std::vector<ParsedMaterial> parsed;
     LoadMTL("../assets/sponza.mtl", parsed);
@@ -897,10 +764,6 @@ bool DirectXApp::Initialize() {
         Material mat;
         mat.Name = p.Name;
         mat.SrvHeapIndex = srvIndex++;
-
-        std::string lower = p.Name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), tolower);
-        mat.isFlag = (lower.find("fabric") != std::string::npos );
 
         if (!p.DiffuseMap.empty())
         {
@@ -931,11 +794,96 @@ bool DirectXApp::Initialize() {
 
         mMaterials.push_back(mat);
     }
+    CreateTextureFromTGA("../assets/textures/sponza_roof_diff.tga", mSecondaryTexture);
+
+    // SRV for 2 texture
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc2 = {};
+    srvDesc2.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc2.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srvDesc2.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc2.Texture2D.MipLevels = 1;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE hDescriptor2 =
+        mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+    hDescriptor2.ptr += (1 + mMaterials.size()) * mCbvSrvUavDescriptorSize;
+
+    device->CreateShaderResourceView(
+        mSecondaryTexture.Get(),
+        &srvDesc2,
+        hDescriptor2);
+
     BuildRootSignature();
     BuildShaders();
     BuildPSO();
-    BuildWireframePSO();  
     BuildConstantBuffer();
+
+    mCameraCB = std::make_unique<UploadBuffer<CameraConstants>>(
+        device.Get(),
+        1,
+        true);
+
+    mLights.clear();
+
+    // 1. Ambient
+    mLights.push_back(Light::CreateAmbientLight(DirectX::XMFLOAT3(0.1f, 0.1f, 0.01f)));
+
+    // 2. Spot light 1
+    mLights.push_back(Light::CreateSpotLight(
+        DirectX::XMFLOAT3(0.0f, -2.0f, 0.0f),
+        DirectX::XMFLOAT3(0.3f, 0.5f, 1.0f),
+        DirectX::XMFLOAT3(0.3f, 0.5f, 1.0f),
+        2.5f,
+        12.0f,
+        XM_PIDIV4));
+
+    // 3. Spot light 2
+    mLights.push_back(Light::CreateSpotLight(
+        DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f),
+        DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f),
+        DirectX::XMFLOAT3(1.0f, 0.0f, 0.0f),
+        15.0f,
+        60.0f,
+        XM_PIDIV2));
+
+    // 4. Point light 1
+    mLights.push_back(Light::CreatePointLight(
+        DirectX::XMFLOAT3(5.0f, 3.0f, 0.0f),
+        DirectX::XMFLOAT3(0.3f, 1.0f, 0.3f),
+        3.0f,
+        5.0f));
+
+    // 5. Directional light
+    mLights.push_back(Light::CreateDirectionalLight(
+        DirectX::XMFLOAT3(0.5f, -1.0f, 0.3f),
+        DirectX::XMFLOAT3(1.0f, 0.95f, 0.9f),
+        1.0f));
+
+    // 6. Point light 2
+    mLights.push_back(Light::CreatePointLight(
+        DirectX::XMFLOAT3(3.0f, 2.0f, 2.0f),
+        DirectX::XMFLOAT3(1.0f, 1.0f, 0.0f),
+        2.5f,
+        12.0f));
+    mLightingCB = std::make_unique<UploadBuffer<LightConstants>>(
+        device.Get(),
+        (UINT)mLights.size(),
+        true);
+
+
+    mRenderingSystem = std::make_unique<RenderingSystem>(
+    device.Get(),
+    mCommandQueue.Get(),
+    mCommandList.Get(),
+    mDirectCmdListAlloc.Get(),
+    mFence.Get(),
+    SwapChainBufferCount,
+    mBackBufferFormat);
+
+    if (!mRenderingSystem->Initialize(mClientWidth, mClientHeight))
+    {
+        MessageBox(NULL, L"Failed to initialize rendering system", L"Error", MB_OK);
+        return false;
+    }
 
     // Инициализация проекционной матрицы
     XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * XM_PI,
@@ -973,17 +921,6 @@ void DirectXApp::OnKeyDown(WPARAM wParam)
         OutputDebugStringA("Window not active!\n");
         return;
     }
-    // Пробел переключает режим отображения
-    if (wParam == VK_F2) {
-        mWireframeMode = !mWireframeMode;
-
-        if (mWireframeMode) {
-            SetWindowText(window.GetHandle(), L"DirectX 12 Framework - Wireframe Mode (Press SPACE to switch)");
-        }
-        else {
-            SetWindowText(window.GetHandle(), L"DirectX 12 Framework - Solid Mode (Press SPACE to switch)");
-        }
-    }
 
     // Клавиша T включает/выключает анимацию текстур
     if (wParam == 'T') {
@@ -996,6 +933,12 @@ void DirectXApp::OnKeyDown(WPARAM wParam)
         mUVScaleV = 1.0f;
         mUVOffsetU = 0.0f;
         mUVOffsetV = 0.0f;
+    }
+    if (wParam == 'M') {
+        mChessboardMode = !mChessboardMode;
+        char buf[100];
+        sprintf_s(buf, "Chessboard mode: %s\n", mChessboardMode ? "ON" : "OFF");
+        OutputDebugStringA(buf);
     }
 }
 
@@ -1023,6 +966,8 @@ int DirectXApp::Run() {
     return (int)msg.wParam;
 }
 
+
+
 void DirectXApp::CalculateFrameStats() {
     mFrameCount++;
     if ((mTimer.TotalTime() - mTimeElapsed) >= 1.0f) {
@@ -1030,12 +975,7 @@ void DirectXApp::CalculateFrameStats() {
         float mspf = 1000.0f / fps;
 
         std::wstring windowText = mMainWndCaption;
-        if (mWireframeMode) {
-            windowText += L" - Wireframe Mode";
-        }
-        else {
-            windowText += L" - Solid Mode";
-        }
+
         windowText += L" FPS: " + std::to_wstring(fps);
         windowText += L" MSPF: " + std::to_wstring(mspf);
 
@@ -1054,77 +994,92 @@ void DirectXApp::Update(const Timer& gt)
     // ===== Forward Vector =====
     XMFLOAT3 forward =
     {
-        cosf(mPitch) * cosf(mYaw),
-        sinf(mPitch),
-        cosf(mPitch) * sinf(mYaw)
+        cosf(mPitch) * cosf(mYaw),   // X
+        sinf(mPitch),                 // Y
+        cosf(mPitch) * sinf(mYaw)    // Z
     };
 
     XMVECTOR forwardVec = XMLoadFloat3(&forward);
     forwardVec = XMVector3Normalize(forwardVec);
 
-    XMVECTOR rightVec = XMVector3Normalize(
-        XMVector3Cross(
-            XMVectorSet(0, 1, 0, 0),
-            forwardVec));
+    XMVECTOR worldUp = XMVectorSet(0, 1, 0, 0);
+    XMVECTOR rightVec = XMVector3Normalize(XMVector3Cross(worldUp, forwardVec));
+
+    XMVECTOR upVec = XMVector3Normalize(XMVector3Cross(forwardVec, rightVec));
 
     // ===== Movement =====
     XMVECTOR pos = XMLoadFloat3(&mEyePos);
+    XMVECTOR delta = XMVectorZero();
 
     if (GetAsyncKeyState('W') & 0x8000)
-        pos += forwardVec * speed * dt;
-
+        delta = XMVectorAdd(delta, XMVectorScale(forwardVec, speed * dt));
     if (GetAsyncKeyState('S') & 0x8000)
-        pos -= forwardVec * speed * dt;
-
+        delta = XMVectorSubtract(delta, XMVectorScale(forwardVec, speed * dt));
     if (GetAsyncKeyState('A') & 0x8000)
-        pos -= rightVec * speed * dt;
-
+        delta = XMVectorSubtract(delta, XMVectorScale(rightVec, speed * dt));
     if (GetAsyncKeyState('D') & 0x8000)
-        pos += rightVec * speed * dt;
-
+        delta = XMVectorAdd(delta, XMVectorScale(rightVec, speed * dt));
     if (GetAsyncKeyState(VK_UP) & 0x8000)
-        pos += XMVectorSet(0, 1, 0, 0) * speed * dt;
-
+        delta = XMVectorAdd(delta, XMVectorScale(XMVectorSet(0, 1, 0, 0), speed * dt));
     if (GetAsyncKeyState(VK_DOWN) & 0x8000)
-        pos -= XMVectorSet(0, 1, 0, 0) * speed * dt;
+        delta = XMVectorSubtract(delta, XMVectorScale(XMVectorSet(0, 1, 0, 0), speed * dt));
 
+    if (XMVectorGetX(XMVector3LengthSq(delta)) > 0.0f)
+        delta = XMVector3Normalize(delta) * speed * dt;
+    pos += delta;
     XMStoreFloat3(&mEyePos, pos);
 
     // ===== View Matrix =====
-    XMVECTOR target = pos + forwardVec;
-    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-
-    XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+    XMMATRIX view = XMMatrixLookToLH(pos, forwardVec, upVec);
     XMStoreFloat4x4(&mView, view);
-
     // ===== Projection =====
     XMMATRIX proj = XMMatrixPerspectiveFovLH(
         XM_PIDIV4,
-        (float)mClientWidth / (float)mClientHeight,
+        static_cast<float>(mClientWidth) / static_cast<float>(mClientHeight),
         0.1f,
         1000.0f);
-
     XMStoreFloat4x4(&mProj, proj);
+
+    XMMATRIX viewProj = view * proj;
+    XMMATRIX invViewProj = XMMatrixInverse(nullptr, viewProj);
+
+    CameraConstants camConstants;
+    XMStoreFloat4x4(&camConstants.mInvViewProj, XMMatrixTranspose(invViewProj));
+    camConstants.mCameraPos = mEyePos;                     // позиция камеры
+    camConstants.mScreenSize = { (float)mClientWidth, (float)mClientHeight };
+    mCameraCB->CopyData(0, camConstants);
 
     // ===== TEXTURE ANIMATION =====
     if (mAnimateTextures)
     {
-        // Анимация: UV смещение меняется со временем
-        mUVOffsetU += dt * 0.1f;  // Медленный сдвиг по U
-        mUVOffsetV += dt * 0.05f; // Медленный сдвиг по V
-
-        // Зацикливаем, чтобы не уходило в бесконечность
+        mUVOffsetU += dt * 0.1f;
+        mUVOffsetV += dt * 0.05f;
         if (mUVOffsetU > 1.0f) mUVOffsetU -= 1.0f;
         if (mUVOffsetV > 1.0f) mUVOffsetV -= 1.0f;
     }
 
-    // Управление тайлингом с клавиатуры
+    // Управление тайлингом
     if (GetAsyncKeyState('1') & 0x8000) mUVScaleU += dt * 2.0f;
     if (GetAsyncKeyState('2') & 0x8000) mUVScaleU -= dt * 2.0f;
     if (GetAsyncKeyState('3') & 0x8000) mUVScaleV += dt * 2.0f;
     if (GetAsyncKeyState('4') & 0x8000) mUVScaleV -= dt * 2.0f;
 
-    // Ограничения
+    // Управление шахматной доской
+    if (GetAsyncKeyState('M') & 0x8000) {
+        static bool wasPressed = false;
+        if (!wasPressed) {
+            mChessboardMode = !mChessboardMode;
+            wasPressed = true;
+        }
+        else {
+            wasPressed = false;
+        }
+    }
+
+    if (GetAsyncKeyState('[') & 0x8000) mChessTileSize += dt * 0.2f;
+    if (GetAsyncKeyState(']') & 0x8000) mChessTileSize -= dt * 0.2f;
+
+    mChessTileSize = max(0.1f, min(2.0f, mChessTileSize));
     mUVScaleU = max(0.1f, mUVScaleU);
     mUVScaleV = max(0.1f, mUVScaleV);
 
@@ -1132,141 +1087,60 @@ void DirectXApp::Update(const Timer& gt)
     XMMATRIX world = XMMatrixIdentity();
     XMMATRIX worldViewProj = world * view * proj;
 
-    static float time = 0;
-    time += gt.DeltaTime();
-
     ObjectConstants objConstants;
-    objConstants.mTime = XMFLOAT4(time, 0, 0, 0);
+    XMStoreFloat4x4(&objConstants.mWorld, XMMatrixTranspose(world));
+    XMStoreFloat4x4(&objConstants.mWorldViewProj, XMMatrixTranspose(worldViewProj));
+    objConstants.mUVTransform = XMFLOAT4(mUVScaleU, mUVScaleV, mUVOffsetU, mUVOffsetV);
+    objConstants.mChessboardParams = XMFLOAT4(mChessTileSize, 0, 0, 0);
+    mObjectCB->CopyData(0, objConstants);
 
-
-    XMStoreFloat4x4(&objConstants.mWorldViewProj,
-        XMMatrixTranspose(worldViewProj));
-
-    // Устанавливаем UV transform для тайлинга и анимации
-    objConstants.mUVTransform.x = mUVScaleU;  // scaleU
-    objConstants.mUVTransform.y = mUVScaleV;  // scaleV
-    objConstants.mUVTransform.z = mUVOffsetU; // offsetU
-    objConstants.mUVTransform.w = mUVOffsetV; // offsetV
+    objConstants.mUVTransform.x = mUVScaleU;
+    objConstants.mUVTransform.y = mUVScaleV;
+    objConstants.mUVTransform.z = mUVOffsetU;
+    objConstants.mUVTransform.w = mUVOffsetV;
 
     mObjectCB->CopyData(0, objConstants);
+
+    // ===== ОБНОВЛЕНИЕ ПАРАМЕТРОВ ОСВЕЩЕНИЯ =====
+
 }
 
 void DirectXApp::Draw(const Timer& gt)
 {
-    if (mIndexCount == 0)
-        return;
+    mRenderingSystem->GeometryPass(
+        mPSO.Get(),
+        mRootSignature.Get(),
+        mCbvHeap.Get(),
+        mCbvSrvUavDescriptorSize,
+        mSubmeshes,
+        mMaterials,
+        mVertexBufferGPU.Get(),
+        mIndexBufferGPU.Get(),
+        mVertexBufferView,
+        mIndexBufferView,
+        mDepthStencilBuffer.Get(),
+        DepthStencilView(),
+        mScreenViewport,
+        mScissorRect,
+        (UINT)mMaterials.size(),
+        mSecondaryTexture.Get());
+    mRenderingSystem->LightingPass(
+        CurrentBackBuffer(),
+        CurrentBackBufferView(),
+        mLights,
+        mEyePos,
+        mScreenViewport,
+        mScissorRect,
+        mCurrBackBuffer,
+        mSwapChain.Get(),
+        mRenderingSystem->GetLightingPSO(),
+        mRenderingSystem->GetLightingRootSignature(),
+        mRenderingSystem->GetLightingCB(),
+        mCameraCB.get(),
+        mRenderingSystem->GetGBuffer());
 
-    mDirectCmdListAlloc->Reset();
+    FlushCommandQueue(); // ОДИН РАЗ В КОНЦЕ!
 
-    if (mWireframeMode)
-        mCommandList->Reset(mDirectCmdListAlloc.Get(), mWireframePSO.Get());
-    else
-        mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSO.Get());
-
-    D3D12_RESOURCE_BARRIER barrier =
-        CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-            CurrentBackBuffer(),
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    SetViewportAndScissor();
-
-    const float clearColor[] = { 0.53f, 0.81f, 0.98f, 1.0f };
-
-    auto rtvHandle = CurrentBackBufferView();
-    auto dsvHandle = mDsvHeap->GetCPUDescriptorHandleForHeapStart();
-
-    mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-    mCommandList->ClearDepthStencilView(
-        dsvHandle,
-        D3D12_CLEAR_FLAG_DEPTH,
-        1.0f,
-        0,
-        0,
-        nullptr);
-
-    mCommandList->OMSetRenderTargets(1, &rtvHandle, true, &dsvHandle);
-
-    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-
-    ID3D12DescriptorHeap* heaps[] = { mCbvHeap.Get() };
-    mCommandList->SetDescriptorHeaps(1, heaps);
-
-    // CBV (b0)
-    mCommandList->SetGraphicsRootDescriptorTable(
-        0,
-        mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
-    mCommandList->IASetIndexBuffer(&mIndexBufferView);
-
-    for (auto& sm : mSubmeshes)
-    {
-        // 🔎 Найти материал
-        Material* mat = nullptr;
-
-        for (auto& m : mMaterials)
-        {
-            if (m.Name == sm.MaterialName)
-            {
-                mat = &m;
-                break;
-            }
-        }
-
-        if (!mat)
-        {
-            MessageBoxA(nullptr, sm.MaterialName.c_str(), "Missing Material", MB_OK);
-            continue;
-        }
-
-        //if (mat->DiffuseMap.empty())
-        //{
-        //    MessageBoxA(nullptr, mat->Name.c_str(), "NO TEXTURE", MB_OK);
-        //}
-
-        // 📌 Установить SRV конкретного материала
-        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle =
-            mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-
-        srvHandle.ptr += (1 + mat->SrvHeapIndex) * mCbvSrvUavDescriptorSize;
-
-        mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
-
-        float isFlag = mat->isFlag ? 1.0f : 0.0f;
-        mCommandList->SetGraphicsRoot32BitConstant(2, *(UINT*)&isFlag, 0);
-
-        // 🎨 Нарисовать только этот submesh
-        mCommandList->DrawIndexedInstanced(
-            sm.IndexCount,
-            1,
-            sm.IndexStart,
-            0,
-            0);
-    }
-
-    // === PRESENT ===
-
-    barrier =
-        CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-            CurrentBackBuffer(),
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_PRESENT);
-
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    mCommandList->Close();
-
-    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
-    mCommandQueue->ExecuteCommandLists(1, cmdLists);
-
-    mSwapChain->Present(0, 0);
-    mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
-
-    FlushCommandQueue();
 }
 
 void DirectXApp::CreateTextureFromTGA(
@@ -1406,12 +1280,11 @@ void DirectXApp::CreateColorTexture(
     const DirectX::XMFLOAT3& color,
     Microsoft::WRL::ComPtr<ID3D12Resource>& texture)
 {
-    BYTE b = (BYTE)(color.x * 255.0f);
-    BYTE g = (BYTE)(color.y * 255.0f);
-    BYTE r = (BYTE)(color.z * 255.0f);
-    BYTE a = 255;
+    UINT r = (UINT)(color.x * 255.0f);
+    UINT g = (UINT)(color.y * 255.0f);
+    UINT b = (UINT)(color.z * 255.0f);
 
-    UINT pixel = (a << 24) | (r << 16) | (g << 8) | b;
+    UINT pixel = (255 << 24) | (b << 16) | (g << 8) | r;
 
     // ---- TEXTURE (DEFAULT heap) ----
     D3D12_RESOURCE_DESC texDesc = {};

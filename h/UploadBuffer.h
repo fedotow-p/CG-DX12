@@ -49,6 +49,8 @@ public:
         mMappedData = nullptr;
     }
 
+    UINT GetElementSize() const { return mElementByteSize; }
+
     ID3D12Resource* Resource() const { return mUploadBuffer.Get(); }
 
     void CopyData(int elementIndex, const T& data)

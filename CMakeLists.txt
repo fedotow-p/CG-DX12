@@ -28,4 +28,10 @@ add_executable(CG_DX12
         h/Vertex.h
         src/Window.cpp
         h/Window.h
+        h/Gbuffer.h
+        h/Light.h
+        h/CameraConstants.h
+        h/RenderingSystem.h
+        src/Gbuffer.cpp
+        src/RenderingSystem.cpp
 )

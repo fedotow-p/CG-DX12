@@ -1,11 +1,13 @@
 Texture2D gDiffuseMap : register(t0);
+Texture2D gSecondaryMap : register(t1);
 SamplerState gSampler : register(s0);
 
 cbuffer cbPerObject : register(b0)
 {
+    float4x4 mWorld;
     float4x4 mWorldViewProj;
-    float4 mUVTransform;  // x = scaleU, y = scaleV, z = offsetU, w = offsetV
-    float4 mTime;
+    float4 mUVTransform;
+    float4 mChessboardParams;
 };
 
 struct VSInput
@@ -15,39 +17,48 @@ struct VSInput
     float2 Tex : TEXCOORD;
 };
 
-struct PSInput
+struct VSOutput
 {
-    float4 PosH : SV_POSITION; //SYstem value pos
-    float2 TexC : TEXCOORD;
+    float4 PosH : SV_POSITION;
+    float3 WorldPos : POSITION0;
+    float3 Normal : NORMAL0;
+    float2 TexC : TEXCOORD0;
 };
 
-float gIsFlag : register(b1);
-
-PSInput VS(VSInput vin)
+struct PSOutput
 {
-    PSInput vout;
+    float4 Albedo : SV_Target0;
+    float4 Normal : SV_Target1;
+    float Depth : SV_Target2;   // глубина в NDC (0..1)
+};
 
-    float3 modifiedPos = vin.Pos;
+VSOutput VS(VSInput vin)
+{
+    VSOutput vout;
 
-    if (gIsFlag > 0.5f)
-    {
-        float wave = sin(vin.Pos.x * 3.0f - mTime.x * 4.0f);
-        modifiedPos.z += wave * 0.03f;
-
-        float waveY = sin(vin.Pos.x * 5.0f - mTime.x * 3.0f) * 0.02f;
-        modifiedPos.y += waveY;
-    }
-
-    vout.PosH = mul(float4(modifiedPos, 1.0f), mWorldViewProj);
+    float4 worldPos = mul(float4(vin.Pos, 1.0f), mWorld);
+    vout.PosH = mul(float4(vin.Pos, 1.0f), mWorldViewProj);
+    vout.WorldPos = worldPos.xyz;
+    vout.Normal = normalize(mul(vin.Normal, (float3x3)mWorld));
     vout.TexC = vin.Tex * mUVTransform.xy + mUVTransform.zw;
 
     return vout;
 }
 
-float4 PS(PSInput pin) : SV_Target
+PSOutput PS(VSOutput pin)
 {
-    float4 tex = gDiffuseMap.Sample(gSampler, pin.TexC);
+    PSOutput pout;
 
+    float4 albedo = gDiffuseMap.Sample(gSampler, pin.TexC);
+    float4 tex2 = gSecondaryMap.Sample(gSampler, pin.TexC);
+    float tileSize = mChessboardParams.x;
+    float2 chessPos = pin.TexC / tileSize;
+    int2 cell = floor(chessPos);
+    int isEven = (cell.x + cell.y) % 2;
 
-    return tex;
+    pout.Albedo = (isEven == 1) ? tex2 : albedo;
+    pout.Normal = float4(pin.Normal, 1.0f);
+    pout.Depth = pin.PosH.z;          // глубина в NDC [0,1]
+
+    return pout;
 }
