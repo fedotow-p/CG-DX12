@@ -12,6 +12,8 @@
 #include "../h/GBuffer.h"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <limits>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -330,21 +332,20 @@ void DirectXApp::BuildObj(const std::string& path)
 
     // Очистить старые данные
     mSubmeshes.clear();
-
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
+    mSceneVertices.clear();
+    mSceneIndices.clear();
 
     // Загружаем OBJ с сабмешами
-    if (!LoadOBJ(path, vertices, indices, mSubmeshes))
+    if (!LoadOBJ(path, mSceneVertices, mSceneIndices, mSubmeshes))
     {
         MessageBoxA(nullptr, "Failed to load OBJ", "Error", MB_OK);
         return;
     }
 
-    mIndexCount = static_cast<UINT>(indices.size());
+    mIndexCount = static_cast<UINT>(mSceneIndices.size());
 
-    UINT vbByteSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
-    UINT ibByteSize = static_cast<UINT>(indices.size() * sizeof(uint32_t));
+    UINT vbByteSize = static_cast<UINT>(mSceneVertices.size() * sizeof(Vertex));
+    UINT ibByteSize = static_cast<UINT>(mSceneIndices.size() * sizeof(uint32_t));
 
     // ====================================================
     //                VERTEX BUFFER
@@ -372,7 +373,7 @@ void DirectXApp::BuildObj(const std::string& path)
 
     void* mappedData = nullptr;
     mVertexBufferGPU->Map(0, nullptr, &mappedData);
-    memcpy(mappedData, vertices.data(), vbByteSize);
+    memcpy(mappedData, mSceneVertices.data(), vbByteSize);
     mVertexBufferGPU->Unmap(0, nullptr);
 
     mVertexBufferView.BufferLocation = mVertexBufferGPU->GetGPUVirtualAddress();
@@ -401,7 +402,7 @@ void DirectXApp::BuildObj(const std::string& path)
         IID_PPV_ARGS(&mIndexBufferGPU)));
 
     mIndexBufferGPU->Map(0, nullptr, &mappedData);
-    memcpy(mappedData, indices.data(), ibByteSize);
+    memcpy(mappedData, mSceneIndices.data(), ibByteSize);
     mIndexBufferGPU->Unmap(0, nullptr);
 
     mIndexBufferView.BufferLocation = mIndexBufferGPU->GetGPUVirtualAddress();
@@ -949,6 +950,10 @@ void DirectXApp::OnKeyDown(WPARAM wParam)
         sprintf_s(buf, "Chessboard mode: %s\n", mChessboardMode ? "ON" : "OFF");
         OutputDebugStringA(buf);
     }
+
+    if (wParam == 'F') {
+        mPendingLightProjectileSpawn = true;
+    }
 }
 
 int DirectXApp::Run() {
@@ -1058,6 +1063,14 @@ void DirectXApp::Update(const Timer& gt)
     camConstants.mScreenSize = { (float)mClientWidth, (float)mClientHeight };
     mCameraCB->CopyData(0, camConstants);
 
+    if (mPendingLightProjectileSpawn)
+    {
+        SpawnLightProjectile(pos, forwardVec);
+        mPendingLightProjectileSpawn = false;
+    }
+
+    UpdateLightProjectile(dt);
+
     // ===== TEXTURE ANIMATION =====
     if (mAnimateTextures)
     {
@@ -1115,6 +1128,161 @@ void DirectXApp::Update(const Timer& gt)
 
     // ===== ОБНОВЛЕНИЕ ПАРАМЕТРОВ ОСВЕЩЕНИЯ =====
 
+}
+
+void DirectXApp::SpawnLightProjectile(const XMVECTOR& cameraPos, const XMVECTOR& forwardVec)
+{
+    const XMVECTOR spawnOffset = XMVectorScale(forwardVec, 0.35f);
+    const XMVECTOR spawnPos = XMVectorAdd(cameraPos, spawnOffset);
+
+    XMStoreFloat3(&mLightProjectile.Position, spawnPos);
+    XMStoreFloat3(&mLightProjectile.Direction, XMVector3Normalize(forwardVec));
+    mLightProjectile.IsActive = true;
+
+    if (mLightProjectile.LightIndex >= mLights.size())
+    {
+        mLightProjectile.LightIndex = mLights.size();
+        mLights.push_back(Light::CreatePointLight(
+            mLightProjectile.Position,
+            XMFLOAT3(1.0f, 0.95f, 0.75f),
+            mLightProjectile.Intensity,
+            mLightProjectile.Range));
+    }
+
+    Light& projectileLight = mLights[mLightProjectile.LightIndex];
+    projectileLight = Light::CreatePointLight(
+        mLightProjectile.Position,
+        XMFLOAT3(1.0f, 0.95f, 0.75f),
+        mLightProjectile.Intensity,
+        mLightProjectile.Range);
+}
+
+void DirectXApp::UpdateLightProjectile(float dt)
+{
+    if (!mLightProjectile.IsActive || mLightProjectile.LightIndex >= mLights.size())
+    {
+        return;
+    }
+
+    XMVECTOR currentPos = XMLoadFloat3(&mLightProjectile.Position);
+    XMVECTOR direction = XMVector3Normalize(XMLoadFloat3(&mLightProjectile.Direction));
+    XMVECTOR nextPos = XMVectorAdd(currentPos, XMVectorScale(direction, mLightProjectile.Speed * dt));
+
+    XMFLOAT3 startPoint;
+    XMFLOAT3 endPoint;
+    XMFLOAT3 hitPoint;
+    XMStoreFloat3(&startPoint, currentPos);
+    XMStoreFloat3(&endPoint, nextPos);
+
+    if (SegmentHitsScene(startPoint, endPoint, hitPoint))
+    {
+        mLightProjectile.IsActive = false;
+        mLights[mLightProjectile.LightIndex].Intensity = 0.0f;
+        mLights[mLightProjectile.LightIndex].Range = 0.0f;
+        mLights[mLightProjectile.LightIndex].Position = hitPoint;
+        return;
+    }
+
+    XMStoreFloat3(&mLightProjectile.Position, nextPos);
+    mLights[mLightProjectile.LightIndex].Position = mLightProjectile.Position;
+    mLights[mLightProjectile.LightIndex].Intensity = mLightProjectile.Intensity;
+    mLights[mLightProjectile.LightIndex].Range = mLightProjectile.Range;
+}
+
+bool DirectXApp::SegmentHitsScene(
+    const XMFLOAT3& start,
+    const XMFLOAT3& end,
+    XMFLOAT3& hitPoint) const
+{
+    if (mSceneIndices.size() < 3 || mSceneVertices.size() < 3)
+    {
+        return false;
+    }
+
+    const XMVECTOR origin = XMLoadFloat3(&start);
+    const XMVECTOR segment = XMVectorSubtract(XMLoadFloat3(&end), origin);
+    const float segmentLength = XMVectorGetX(XMVector3Length(segment));
+
+    if (segmentLength <= 1e-5f)
+    {
+        return false;
+    }
+
+    const XMVECTOR direction = XMVectorScale(segment, 1.0f / segmentLength);
+    float closestHit = (std::numeric_limits<float>::max)();
+    bool hasHit = false;
+
+    for (size_t i = 0; i + 2 < mSceneIndices.size(); i += 3)
+    {
+        const Vertex& a = mSceneVertices[mSceneIndices[i]];
+        const Vertex& b = mSceneVertices[mSceneIndices[i + 1]];
+        const Vertex& c = mSceneVertices[mSceneIndices[i + 2]];
+
+        float hitDistance = 0.0f;
+        if (!RayIntersectsTriangle(
+                origin,
+                direction,
+                XMLoadFloat3(&a.position),
+                XMLoadFloat3(&b.position),
+                XMLoadFloat3(&c.position),
+                hitDistance))
+        {
+            continue;
+        }
+
+        if (hitDistance >= 0.0f && hitDistance <= segmentLength && hitDistance < closestHit)
+        {
+            closestHit = hitDistance;
+            hasHit = true;
+        }
+    }
+
+    if (!hasHit)
+    {
+        return false;
+    }
+
+    const XMVECTOR impact = XMVectorAdd(origin, XMVectorScale(direction, closestHit));
+    XMStoreFloat3(&hitPoint, impact);
+    return true;
+}
+
+bool DirectXApp::RayIntersectsTriangle(
+    const XMVECTOR& origin,
+    const XMVECTOR& direction,
+    const XMVECTOR& v0,
+    const XMVECTOR& v1,
+    const XMVECTOR& v2,
+    float& distance)
+{
+    const float epsilon = 1e-6f;
+    const XMVECTOR edge1 = XMVectorSubtract(v1, v0);
+    const XMVECTOR edge2 = XMVectorSubtract(v2, v0);
+    const XMVECTOR pVec = XMVector3Cross(direction, edge2);
+    const float det = XMVectorGetX(XMVector3Dot(edge1, pVec));
+
+    if (fabsf(det) < epsilon)
+    {
+        return false;
+    }
+
+    const float invDet = 1.0f / det;
+    const XMVECTOR tVec = XMVectorSubtract(origin, v0);
+    const float u = XMVectorGetX(XMVector3Dot(tVec, pVec)) * invDet;
+    if (u < 0.0f || u > 1.0f)
+    {
+        return false;
+    }
+
+    const XMVECTOR qVec = XMVector3Cross(tVec, edge1);
+    const float v = XMVectorGetX(XMVector3Dot(direction, qVec)) * invDet;
+    if (v < 0.0f || (u + v) > 1.0f)
+    {
+        return false;
+    }
+
+    distance = XMVectorGetX(XMVector3Dot(edge2, qVec)) * invDet;
+    return distance >= 0.0f;
 }
 
 void DirectXApp::Draw(const Timer& gt)

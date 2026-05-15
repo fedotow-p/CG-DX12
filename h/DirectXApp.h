@@ -63,8 +63,35 @@ public:
     DirectXApp* GetDirectXApp() const { return dxApp; }
 
 private:
+    struct LightProjectile
+    {
+        bool IsActive = false;
+        DirectX::XMFLOAT3 Position = { 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT3 Direction = { 0.0f, 0.0f, 1.0f };
+        float Speed = 12.0f;
+        float Range = 4.5f;
+        float Intensity = 6.0f;
+        size_t LightIndex = static_cast<size_t>(-1);
+    };
+
+    void SpawnLightProjectile(const DirectX::XMVECTOR& cameraPos, const DirectX::XMVECTOR& forwardVec);
+    void UpdateLightProjectile(float dt);
+    bool SegmentHitsScene(
+        const DirectX::XMFLOAT3& start,
+        const DirectX::XMFLOAT3& end,
+        DirectX::XMFLOAT3& hitPoint) const;
+    static bool RayIntersectsTriangle(
+        const DirectX::XMVECTOR& origin,
+        const DirectX::XMVECTOR& direction,
+        const DirectX::XMVECTOR& v0,
+        const DirectX::XMVECTOR& v1,
+        const DirectX::XMVECTOR& v2,
+        float& distance);
+
 
     std::vector<Light> mLights;
+    LightProjectile mLightProjectile;
+    bool mPendingLightProjectileSpawn = false;
     std::unique_ptr<RenderingSystem> mRenderingSystem;
     std::unique_ptr<UploadBuffer<LightConstants>> mLightingCB;
 
@@ -84,6 +111,8 @@ private:
 
     std::vector<Submesh> mSubmeshes;
     std::vector<Material> mMaterials;
+    std::vector<Vertex> mSceneVertices;
+    std::vector<uint32_t> mSceneIndices;
     void CreateTextureFromTGA(
         const std::string& path,
         Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
