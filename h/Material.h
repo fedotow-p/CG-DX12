@@ -1,15 +1,14 @@
 #pragma once
 
+#include <d3d12.h>
 #include <string>
 #include <wrl/client.h>
-#include <d3d12.h>
 
 struct Material
 {
     std::string Name;
-
-    std::string DiffuseMap;      // имя .tga файла
-    UINT SrvHeapIndex = 0;       // индекс SRV в куче
-
+    std::string DiffuseMap;
+    UINT SrvHeapIndex = 0;
+    DXGI_FORMAT TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
     Microsoft::WRL::ComPtr<ID3D12Resource> DiffuseTexture;
 };

@@ -7,12 +7,14 @@
 #include <string>
 #include "../h/ThrowIfFailed.h"
 #include "../h/Parser.h"
+#include "../h/DdsLoader.h"
 #include "../h/TgaLoader.h"
 #include "../h/d3dUtil.h"
 #include "../h/GBuffer.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 
 #pragma comment(lib, "d3d12.lib")
@@ -273,6 +275,7 @@ void DirectXApp::BuildPSO()
     rasterDesc.DepthClipEnable = TRUE;
 
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
     // 5. Blend State (как на слайде)
     D3D12_BLEND_DESC blendDesc = {};
@@ -328,17 +331,28 @@ void DirectXApp::BuildPSO()
 // =========== Остальные методы ===========
 void DirectXApp::BuildObj(const std::string& path)
 {
-    //MessageBoxA(nullptr, "BuildObj called", "DEBUG", MB_OK);
-
-    // Очистить старые данные
     mSubmeshes.clear();
     mSceneVertices.clear();
     mSceneIndices.clear();
 
-    // Загружаем OBJ с сабмешами
-    if (!LoadOBJ(path, mSceneVertices, mSceneIndices, mSubmeshes))
+    std::string loweredPath = path;
+    std::transform(loweredPath.begin(), loweredPath.end(), loweredPath.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    bool loaded = false;
+    if (loweredPath.size() >= 4 && loweredPath.substr(loweredPath.size() - 4) == ".fbx")
     {
-        MessageBoxA(nullptr, "Failed to load OBJ", "Error", MB_OK);
+        std::vector<ParsedMaterial> ignoredMaterials;
+        loaded = LoadFBX(path, mSceneVertices, mSceneIndices, mSubmeshes, ignoredMaterials);
+    }
+    else
+    {
+        loaded = LoadOBJ(path, mSceneVertices, mSceneIndices, mSubmeshes);
+    }
+
+    if (!loaded)
+    {
+        MessageBoxA(nullptr, "Failed to load scene geometry", "Error", MB_OK);
         return;
     }
 
@@ -695,11 +709,13 @@ bool DirectXApp::CreateDepthStencilBuffer() {
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
+    // GeometryPass expects the shared depth buffer to begin in DEPTH_READ
+    // and toggles it to DEPTH_WRITE for the G-buffer pass each frame.
     HRESULT hr = device->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &depthStencilDesc,
-        D3D12_RESOURCE_STATE_COMMON,
+        D3D12_RESOURCE_STATE_DEPTH_READ,
         &optClear,
         IID_PPV_ARGS(&mDepthStencilBuffer)
     );
@@ -763,9 +779,40 @@ bool DirectXApp::Initialize() {
 
     //Геометрия и ресурсы
     BuildInputLayout();
-    BuildObj("../assets/sponza.obj");
+    const std::string scenePath = "../assets/Earth.fbx";
     std::vector<ParsedMaterial> parsed;
-    LoadMTL("../assets/sponza.mtl", parsed);
+
+    const std::string loweredScenePath = [&scenePath]()
+    {
+        std::string value = scenePath;
+        std::transform(value.begin(), value.end(), value.begin(),
+            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        return value;
+    }();
+
+    const bool isFbxScene =
+        loweredScenePath.size() >= 4
+        && loweredScenePath.substr(loweredScenePath.size() - 4) == ".fbx";
+
+    if (isFbxScene)
+    {
+        if (!LoadFBX(scenePath, mSceneVertices, mSceneIndices, mSubmeshes, parsed))
+        {
+            MessageBoxA(nullptr, "Failed to load FBX scene", "Error", MB_OK);
+            return false;
+        }
+
+        BuildObj(scenePath);
+    }
+    else
+    {
+        BuildObj(scenePath);
+        std::filesystem::path mtlPath(scenePath);
+        mtlPath.replace_extension(".mtl");
+        LoadMTL(mtlPath.string(), parsed);
+    }
+
+    mMaterials.clear();
 
     UINT srvIndex = 0;
 
@@ -774,21 +821,24 @@ bool DirectXApp::Initialize() {
         Material mat;
         mat.Name = p.Name;
         mat.SrvHeapIndex = srvIndex++;
+        mat.DiffuseMap = p.DiffuseMap;
 
         if (!p.DiffuseMap.empty())
         {
-            CreateTextureFromTGA(
-                "../assets/" + p.DiffuseMap,
-                mat.DiffuseTexture);
+            CreateTextureFromFile(
+                p.DiffuseMap,
+                mat.DiffuseTexture,
+                mat.TextureFormat);
         }
         else
         {
             CreateColorTexture(p.Kd, mat.DiffuseTexture);
+            mat.TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        srvDesc.Format = mat.TextureFormat;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MipLevels = 1;
 
@@ -804,12 +854,26 @@ bool DirectXApp::Initialize() {
 
         mMaterials.push_back(mat);
     }
-    CreateTextureFromTGA("../assets/textures/sponza_roof_diff.tga", mSecondaryTexture);
+
+    if (!mMaterials.empty())
+    {
+        CreateTextureFromFile(
+            mMaterials.front().DiffuseMap.empty()
+                ? "../assets/textures/earth/Earth_ALB.dds"
+                : mMaterials.front().DiffuseMap,
+            mSecondaryTexture,
+            mSecondaryTextureFormat);
+    }
+    else
+    {
+        CreateColorTexture({ 1.0f, 1.0f, 1.0f }, mSecondaryTexture);
+        mSecondaryTextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    }
 
     // SRV for 2 texture
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc2 = {};
     srvDesc2.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc2.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srvDesc2.Format = mSecondaryTextureFormat;
     srvDesc2.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc2.Texture2D.MipLevels = 1;
 
@@ -1454,6 +1518,148 @@ void DirectXApp::CreateTextureFromTGA(
     mCommandQueue->ExecuteCommandLists(1, cmdLists);
 
     FlushCommandQueue();
+}
+
+void DirectXApp::CreateTextureFromDDS(
+    const std::string& path,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
+    DXGI_FORMAT& textureFormat)
+{
+    DdsImage image;
+    if (!LoadDDS(path, image))
+    {
+        throw std::runtime_error("Failed to load DDS: " + path);
+    }
+
+    textureFormat = image.Format;
+
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = image.Width;
+    texDesc.Height = image.Height;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = image.Format;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&texture)));
+
+    UINT64 uploadSize = 0;
+    device->GetCopyableFootprints(
+        &texDesc, 0, 1, 0,
+        nullptr, nullptr, nullptr,
+        &uploadSize);
+
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width = uploadSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufferDesc.SampleDesc.Count = 1;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &uploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&uploadBuffer)));
+
+    void* mapped = nullptr;
+    uploadBuffer->Map(0, nullptr, &mapped);
+
+    BYTE* destination = reinterpret_cast<BYTE*>(mapped);
+    const BYTE* source = image.Data.data();
+    const UINT alignedRowPitch = (image.RowPitch + 255u) & ~255u;
+
+    for (UINT row = 0; row < image.RowCount; ++row)
+    {
+        memcpy(
+            destination + row * alignedRowPitch,
+            source + row * image.RowPitch,
+            image.RowPitch);
+    }
+
+    uploadBuffer->Unmap(0, nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = texture.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = uploadBuffer.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+
+    device->GetCopyableFootprints(
+        &texDesc, 0, 1, 0,
+        &src.PlacedFootprint,
+        nullptr, nullptr, nullptr);
+
+    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+    mCommandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = texture.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    mCommandList->ResourceBarrier(1, &barrier);
+    mCommandList->Close();
+
+    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(1, cmdLists);
+
+    FlushCommandQueue();
+}
+
+void DirectXApp::CreateTextureFromFile(
+    const std::string& path,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
+    DXGI_FORMAT& textureFormat)
+{
+    namespace fs = std::filesystem;
+
+    fs::path resolvedPath(path);
+    if (!fs::exists(resolvedPath))
+    {
+        const fs::path assetRelative = fs::path("../assets") / path;
+        if (fs::exists(assetRelative))
+            resolvedPath = assetRelative;
+    }
+
+    std::string loweredPath = resolvedPath.string();
+    std::transform(loweredPath.begin(), loweredPath.end(), loweredPath.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    if (loweredPath.size() >= 4 && loweredPath.substr(loweredPath.size() - 4) == ".dds")
+    {
+        CreateTextureFromDDS(resolvedPath.string(), texture, textureFormat);
+    }
+    else
+    {
+        CreateTextureFromTGA(resolvedPath.string(), texture);
+        textureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    }
 }
 
 void DirectXApp::CreateColorTexture(

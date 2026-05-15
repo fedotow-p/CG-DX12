@@ -21,6 +21,8 @@ add_executable(CG_DX12
         h/Submesh.h
         src/TgaLoader.cpp
         h/TgaLoader.h
+        src/DdsLoader.cpp
+        h/DdsLoader.h
         h/ThrowIfFailed.h
         src/Timer.cpp
         h/Timer.h

@@ -113,13 +113,22 @@ private:
     std::vector<Material> mMaterials;
     std::vector<Vertex> mSceneVertices;
     std::vector<uint32_t> mSceneIndices;
+    DXGI_FORMAT mSecondaryTextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
     void CreateTextureFromTGA(
         const std::string& path,
         Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
+    void CreateTextureFromDDS(
+        const std::string& path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
+        DXGI_FORMAT& textureFormat);
+    void CreateTextureFromFile(
+        const std::string& path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
+        DXGI_FORMAT& textureFormat);
 
     DirectXApp* dxApp = nullptr;
 
-    XMFLOAT3 mEyePos = XMFLOAT3(0.0f, 0.0f, 0.0f);
+    XMFLOAT3 mEyePos = XMFLOAT3(-5.0f, 0.0f, 0.0f);
 
 
     Window& window;
