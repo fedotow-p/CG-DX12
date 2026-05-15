@@ -23,6 +23,35 @@
 
 using namespace DirectX;
 
+namespace
+{
+std::string ToLowerCopy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+void CreateTextureSrv(
+    ID3D12Device* device,
+    ID3D12DescriptorHeap* heap,
+    UINT descriptorSize,
+    UINT descriptorIndex,
+    ID3D12Resource* texture,
+    DXGI_FORMAT format)
+{
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
+    handle.ptr += descriptorIndex * descriptorSize;
+    device->CreateShaderResourceView(texture, &srvDesc, handle);
+}
+}
+
 
 DirectXApp::DirectXApp(Window& window) : window(window)
 {
@@ -99,6 +128,20 @@ void DirectXApp::BuildShaders()
         "vs_5_0"
     );
 
+    mhsByteCode = d3dUtil::CompileShader(
+        L"../src/shaders.hlsl",
+        nullptr,
+        "HS",
+        "hs_5_0"
+    );
+
+    mdsByteCode = d3dUtil::CompileShader(
+        L"../src/shaders.hlsl",
+        nullptr,
+        "DS",
+        "ds_5_0"
+    );
+
     mpsByteCode = d3dUtil::CompileShader(
         L"../src/shaders.hlsl",
         nullptr,
@@ -128,6 +171,7 @@ void DirectXApp::BuildConstantBuffer()
 
     // Initialization UV transform
     objConstants.mUVTransform = XMFLOAT4(2.0f, 2.0f, 0.0f, 0.0f); // scale 2x для тайлинга
+    objConstants.mTessellationParams = XMFLOAT4(16.0f, 2.0f, 3.5f, 9.0f);
 
     mObjectCB->CopyData(0, objConstants);
 
@@ -165,7 +209,7 @@ void DirectXApp::BuildRootSignature()
     srvRange1.RegisterSpace = 0;
     srvRange1.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    // SRV range for texture2 (t1)
+    // SRV range for normal map (t1)
     D3D12_DESCRIPTOR_RANGE srvRange2 = {};
     srvRange2.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRange2.NumDescriptors = 1;
@@ -173,7 +217,15 @@ void DirectXApp::BuildRootSignature()
     srvRange2.RegisterSpace = 0;
     srvRange2.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParameters[4];
+    // SRV range for height map (t2)
+    D3D12_DESCRIPTOR_RANGE srvRange3 = {};
+    srvRange3.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange3.NumDescriptors = 1;
+    srvRange3.BaseShaderRegister = 2;
+    srvRange3.RegisterSpace = 0;
+    srvRange3.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER rootParameters[5];
 
     // Slot 0 → CBV
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -181,24 +233,30 @@ void DirectXApp::BuildRootSignature()
     rootParameters[0].DescriptorTable.pDescriptorRanges = &cbvRange;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Slot 1 → SRV for texture1 (t0)
+    // Slot 1 → SRV for albedo (t0)
     rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
     rootParameters[1].DescriptorTable.pDescriptorRanges = &srvRange1;
-    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Slot 2 → SRV for texture2 (t1)
+    // Slot 2 → SRV for normal map (t1)
     rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[2].DescriptorTable.NumDescriptorRanges = 1;
     rootParameters[2].DescriptorTable.pDescriptorRanges = &srvRange2;
-    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Slot 3 → isFlag (b1)
-    rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParameters[3].Constants.Num32BitValues = 1;
-    rootParameters[3].Constants.ShaderRegister = 1;
-    rootParameters[3].Constants.RegisterSpace = 0;
-    rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    // Slot 3 → SRV for height map (t2)
+    rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[3].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[3].DescriptorTable.pDescriptorRanges = &srvRange3;
+    rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // Slot 4 → isFlag (b1)
+    rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[4].Constants.Num32BitValues = 1;
+    rootParameters[4].Constants.ShaderRegister = 1;
+    rootParameters[4].Constants.RegisterSpace = 0;
+    rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Static Sampler (s0)
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -208,10 +266,10 @@ void DirectXApp::BuildRootSignature()
     sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.ShaderRegister = 0;
     sampler.RegisterSpace = 0;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 4;
+    rootSigDesc.NumParameters = 5;
     rootSigDesc.pParameters = rootParameters;
     rootSigDesc.NumStaticSamplers = 1;
     rootSigDesc.pStaticSamplers = &sampler;
@@ -260,6 +318,14 @@ void DirectXApp::BuildPSO()
         reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()),
         mpsByteCode->GetBufferSize()
     };
+    psoDesc.HS = {
+        reinterpret_cast<BYTE*>(mhsByteCode->GetBufferPointer()),
+        mhsByteCode->GetBufferSize()
+    };
+    psoDesc.DS = {
+        reinterpret_cast<BYTE*>(mdsByteCode->GetBufferPointer()),
+        mdsByteCode->GetBufferSize()
+    };
 
     // 2. Input Layout
     psoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
@@ -303,7 +369,7 @@ void DirectXApp::BuildPSO()
     psoDesc.SampleMask = UINT_MAX;
 
     // 8. Примитивы
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
 
     // 9. Render Targets
     psoDesc.NumRenderTargets = 3;
@@ -815,18 +881,40 @@ bool DirectXApp::Initialize() {
     mMaterials.clear();
 
     UINT srvIndex = 0;
+    const std::string earthAlbedo = "../assets/textures/earth/Earth_ALB.dds";
+    const std::string earthNormal = "../assets/textures/earth/Earth_NORM.dds";
+    const std::string earthHeight = "../assets/textures/earth/Earth_HEIGHT.dds";
 
     for (auto& p : parsed)
     {
         Material mat;
         mat.Name = p.Name;
-        mat.SrvHeapIndex = srvIndex++;
         mat.DiffuseMap = p.DiffuseMap;
+        const std::string loweredMaterialName = ToLowerCopy(mat.Name);
+        const bool isEarthMaterial =
+            loweredScenePath.find("earth") != std::string::npos
+            || loweredMaterialName.find("earth") != std::string::npos;
 
-        if (!p.DiffuseMap.empty())
+        if (mat.DiffuseMap.empty() && isEarthMaterial)
+        {
+            mat.DiffuseMap = earthAlbedo;
+        }
+
+        if (isEarthMaterial)
+        {
+            mat.NormalMap = earthNormal;
+            mat.HeightMap = earthHeight;
+            mat.EnableTessellation = true;
+        }
+
+        mat.DiffuseSrvHeapIndex = srvIndex++;
+        mat.NormalSrvHeapIndex = srvIndex++;
+        mat.HeightSrvHeapIndex = srvIndex++;
+
+        if (!mat.DiffuseMap.empty())
         {
             CreateTextureFromFile(
-                p.DiffuseMap,
+                mat.DiffuseMap,
                 mat.DiffuseTexture,
                 mat.TextureFormat);
         }
@@ -836,55 +924,50 @@ bool DirectXApp::Initialize() {
             mat.TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format = mat.TextureFormat;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Texture2D.MipLevels = 1;
+        if (!mat.NormalMap.empty())
+        {
+            CreateTextureFromFile(mat.NormalMap, mat.NormalTexture, mat.NormalFormat);
+        }
+        else
+        {
+            CreateColorTexture({ 0.5f, 0.5f, 1.0f }, mat.NormalTexture);
+            mat.NormalFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        }
 
-        D3D12_CPU_DESCRIPTOR_HANDLE hDescriptor =
-            mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+        if (!mat.HeightMap.empty())
+        {
+            CreateTextureFromFile(mat.HeightMap, mat.HeightTexture, mat.HeightFormat);
+        }
+        else
+        {
+            CreateColorTexture({ 0.5f, 0.5f, 0.5f }, mat.HeightTexture);
+            mat.HeightFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        }
 
-        hDescriptor.ptr += (1 + mat.SrvHeapIndex) * mCbvSrvUavDescriptorSize;
-
-        device->CreateShaderResourceView(
+        CreateTextureSrv(
+            device.Get(),
+            mCbvHeap.Get(),
+            mCbvSrvUavDescriptorSize,
+            1 + mat.DiffuseSrvHeapIndex,
             mat.DiffuseTexture.Get(),
-            &srvDesc,
-            hDescriptor);
+            mat.TextureFormat);
+        CreateTextureSrv(
+            device.Get(),
+            mCbvHeap.Get(),
+            mCbvSrvUavDescriptorSize,
+            1 + mat.NormalSrvHeapIndex,
+            mat.NormalTexture.Get(),
+            mat.NormalFormat);
+        CreateTextureSrv(
+            device.Get(),
+            mCbvHeap.Get(),
+            mCbvSrvUavDescriptorSize,
+            1 + mat.HeightSrvHeapIndex,
+            mat.HeightTexture.Get(),
+            mat.HeightFormat);
 
         mMaterials.push_back(mat);
     }
-
-    if (!mMaterials.empty())
-    {
-        CreateTextureFromFile(
-            mMaterials.front().DiffuseMap.empty()
-                ? "../assets/textures/earth/Earth_ALB.dds"
-                : mMaterials.front().DiffuseMap,
-            mSecondaryTexture,
-            mSecondaryTextureFormat);
-    }
-    else
-    {
-        CreateColorTexture({ 1.0f, 1.0f, 1.0f }, mSecondaryTexture);
-        mSecondaryTextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-    }
-
-    // SRV for 2 texture
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc2 = {};
-    srvDesc2.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc2.Format = mSecondaryTextureFormat;
-    srvDesc2.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc2.Texture2D.MipLevels = 1;
-
-    D3D12_CPU_DESCRIPTOR_HANDLE hDescriptor2 =
-        mCbvHeap->GetCPUDescriptorHandleForHeapStart();
-    hDescriptor2.ptr += (1 + mMaterials.size()) * mCbvSrvUavDescriptorSize;
-
-    device->CreateShaderResourceView(
-        mSecondaryTexture.Get(),
-        &srvDesc2,
-        hDescriptor2);
 
     BuildRootSignature();
     BuildShaders();
@@ -1181,12 +1264,8 @@ void DirectXApp::Update(const Timer& gt)
     objConstants.mUVTransform = XMFLOAT4(mUVScaleU, mUVScaleV, mUVOffsetU, mUVOffsetV);
     objConstants.mChessboardParams = XMFLOAT4(mChessTileSize, 0, 0, 0);
     objConstants.mTime = XMFLOAT4(animationTime, 0.0f, 0.0f, 0.0f);
-    mObjectCB->CopyData(0, objConstants);
-
-    objConstants.mUVTransform.x = mUVScaleU;
-    objConstants.mUVTransform.y = mUVScaleV;
-    objConstants.mUVTransform.z = mUVOffsetU;
-    objConstants.mUVTransform.w = mUVOffsetV;
+    objConstants.mCameraPos = XMFLOAT4(mEyePos.x, mEyePos.y, mEyePos.z, 1.0f);
+    objConstants.mTessellationParams = XMFLOAT4(16.0f, 2.0f, 3.5f, 9.0f);
 
     mObjectCB->CopyData(0, objConstants);
 
@@ -1365,9 +1444,7 @@ void DirectXApp::Draw(const Timer& gt)
         mDepthStencilBuffer.Get(),
         DepthStencilView(),
         mScreenViewport,
-        mScissorRect,
-        (UINT)mMaterials.size(),
-        mSecondaryTexture.Get());
+        mScissorRect);
     mRenderingSystem->LightingPass(
         CurrentBackBuffer(),
         CurrentBackBufferView(),

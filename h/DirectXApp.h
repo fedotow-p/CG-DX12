@@ -193,6 +193,8 @@ private:
 
     // =========== Shaders ===========
     Microsoft::WRL::ComPtr<ID3DBlob> mvsByteCode = nullptr;
+    Microsoft::WRL::ComPtr<ID3DBlob> mhsByteCode = nullptr;
+    Microsoft::WRL::ComPtr<ID3DBlob> mdsByteCode = nullptr;
     Microsoft::WRL::ComPtr<ID3DBlob> mpsByteCode = nullptr;
 
     // =========== Constant Buffer ===========

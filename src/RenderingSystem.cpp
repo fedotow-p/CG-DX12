@@ -281,9 +281,7 @@ void RenderingSystem::GeometryPass(
     ID3D12Resource* depthStencilBuffer,
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle,
     const D3D12_VIEWPORT& viewport,
-    const D3D12_RECT& scissorRect,
-    UINT materialCount,
-    ID3D12Resource* secondaryTexture)
+    const D3D12_RECT& scissorRect)
 {
     if (!mGBuffer) return;
 
@@ -327,7 +325,7 @@ void RenderingSystem::GeometryPass(
     mCommandList->SetDescriptorHeaps(1, heaps);
     mCommandList->SetGraphicsRootDescriptorTable(0, cbvSrvHeap->GetGPUDescriptorHandleForHeapStart());
 
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
     mCommandList->IASetVertexBuffers(0, 1, &vertexBufferView);
     mCommandList->IASetIndexBuffer(&indexBufferView);
 
@@ -348,20 +346,24 @@ void RenderingSystem::GeometryPass(
         // Root Parameter 1: SRV for main texture
         D3D12_GPU_DESCRIPTOR_HANDLE srvHandle1 =
             cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
-        srvHandle1.ptr += (1 + mat->SrvHeapIndex) * cbvSrvDescriptorSize;
+        srvHandle1.ptr += (1 + mat->DiffuseSrvHeapIndex) * cbvSrvDescriptorSize;
         mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle1);
 
         // Root Parameter 2: SRV for secondary texture
         D3D12_GPU_DESCRIPTOR_HANDLE srvHandle2 =
             cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
-        srvHandle2.ptr += (1 + materialCount) * cbvSrvDescriptorSize;
+        srvHandle2.ptr += (1 + mat->NormalSrvHeapIndex) * cbvSrvDescriptorSize;
 
         // Проверяем, нужно ли использовать secondary texture
-        bool isFloor = (mat->Name.find("floor") != std::string::npos);
-        mCommandList->SetGraphicsRootDescriptorTable(2, isFloor ? srvHandle2 : srvHandle1);
+        mCommandList->SetGraphicsRootDescriptorTable(2, srvHandle2);
+
+        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle3 =
+            cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
+        srvHandle3.ptr += (1 + mat->HeightSrvHeapIndex) * cbvSrvDescriptorSize;
+        mCommandList->SetGraphicsRootDescriptorTable(3, srvHandle3);
 
         const float isFlag = IsAnimatedFlagMaterial(*mat) ? 1.0f : 0.0f;
-        mCommandList->SetGraphicsRoot32BitConstant(3, *reinterpret_cast<const UINT*>(&isFlag), 0);
+        mCommandList->SetGraphicsRoot32BitConstant(4, *reinterpret_cast<const UINT*>(&isFlag), 0);
 
         mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
     }

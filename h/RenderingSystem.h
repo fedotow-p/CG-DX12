@@ -45,9 +45,7 @@ public:
         ID3D12Resource* depthStencilBuffer,
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle,
         const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect,
-        UINT materialCount,
-        ID3D12Resource* secondaryTexture);
+        const D3D12_RECT& scissorRect);
 
     void LightingPass(
         ID3D12Resource* backBuffer,
