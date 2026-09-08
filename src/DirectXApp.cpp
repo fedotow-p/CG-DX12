@@ -16,6 +16,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <random>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -422,6 +423,14 @@ void DirectXApp::BuildObj(const std::string& path)
         return;
     }
 
+    UploadSceneGeometryBuffers();
+}
+
+// Uploads the current contents of mSceneVertices / mSceneIndices to the GPU.
+// Safe to call again after appending more geometry (e.g. procedurally
+// generated cubes) to rebuild the vertex/index buffers from scratch.
+void DirectXApp::UploadSceneGeometryBuffers()
+{
     mIndexCount = static_cast<UINT>(mSceneIndices.size());
 
     UINT vbByteSize = static_cast<UINT>(mSceneVertices.size() * sizeof(Vertex));
@@ -488,6 +497,114 @@ void DirectXApp::BuildObj(const std::string& path)
     mIndexBufferView.BufferLocation = mIndexBufferGPU->GetGPUVirtualAddress();
     mIndexBufferView.Format = DXGI_FORMAT_R32_UINT;
     mIndexBufferView.SizeInBytes = ibByteSize;
+}
+
+// Generates `count` unit cubes at random positions/orientations/scales and
+// appends them directly (in world-space, pre-transformed) to the shared
+// scene vertex/index buffers as one extra Submesh drawn with the
+// "RandomCubes" material. Call UploadSceneGeometryBuffers() afterwards to
+// push the updated geometry to the GPU.
+void DirectXApp::BuildRandomCubes(UINT count)
+{
+    if (count == 0)
+        return;
+
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> posXZ(-40.0f, 40.0f);
+    std::uniform_real_distribution<float> posY(0.25f, 12.0f);
+    std::uniform_real_distribution<float> scaleDist(0.15f, 0.6f);
+    std::uniform_real_distribution<float> angleDist(0.0f, XM_2PI);
+
+    struct BoxVertex { XMFLOAT3 pos; XMFLOAT3 normal; XMFLOAT2 uv; };
+
+    // Standard 24-vertex unit box (unique verts per face for flat shading),
+    // wound to be front-facing under CullMode BACK / FrontCounterClockwise=FALSE.
+    static const BoxVertex kUnitBoxVerts[24] =
+    {
+        // front (-z)
+        { {-0.5f,-0.5f,-0.5f}, {0,0,-1}, {0,1} },
+        { {-0.5f, 0.5f,-0.5f}, {0,0,-1}, {0,0} },
+        { { 0.5f, 0.5f,-0.5f}, {0,0,-1}, {1,0} },
+        { { 0.5f,-0.5f,-0.5f}, {0,0,-1}, {1,1} },
+        // back (+z)
+        { {-0.5f,-0.5f, 0.5f}, {0,0,1}, {1,1} },
+        { { 0.5f,-0.5f, 0.5f}, {0,0,1}, {0,1} },
+        { { 0.5f, 0.5f, 0.5f}, {0,0,1}, {0,0} },
+        { {-0.5f, 0.5f, 0.5f}, {0,0,1}, {1,0} },
+        // top (+y)
+        { {-0.5f, 0.5f,-0.5f}, {0,1,0}, {0,1} },
+        { {-0.5f, 0.5f, 0.5f}, {0,1,0}, {0,0} },
+        { { 0.5f, 0.5f, 0.5f}, {0,1,0}, {1,0} },
+        { { 0.5f, 0.5f,-0.5f}, {0,1,0}, {1,1} },
+        // bottom (-y)
+        { {-0.5f,-0.5f,-0.5f}, {0,-1,0}, {1,1} },
+        { { 0.5f,-0.5f,-0.5f}, {0,-1,0}, {0,1} },
+        { { 0.5f,-0.5f, 0.5f}, {0,-1,0}, {0,0} },
+        { {-0.5f,-0.5f, 0.5f}, {0,-1,0}, {1,0} },
+        // left (-x)
+        { {-0.5f,-0.5f, 0.5f}, {-1,0,0}, {0,1} },
+        { {-0.5f, 0.5f, 0.5f}, {-1,0,0}, {0,0} },
+        { {-0.5f, 0.5f,-0.5f}, {-1,0,0}, {1,0} },
+        { {-0.5f,-0.5f,-0.5f}, {-1,0,0}, {1,1} },
+        // right (+x)
+        { { 0.5f,-0.5f,-0.5f}, {1,0,0}, {0,1} },
+        { { 0.5f, 0.5f,-0.5f}, {1,0,0}, {0,0} },
+        { { 0.5f, 0.5f, 0.5f}, {1,0,0}, {1,0} },
+        { { 0.5f,-0.5f, 0.5f}, {1,0,0}, {1,1} },
+    };
+
+    static const uint32_t kUnitBoxIndices[36] =
+    {
+        0,1,2,   0,2,3,     // front
+        4,5,6,   4,6,7,     // back
+        8,9,10,  8,10,11,   // top
+        12,13,14, 12,14,15, // bottom
+        16,17,18, 16,18,19, // left
+        20,21,22, 20,22,23  // right
+    };
+
+    const uint32_t cubesIndexStart = static_cast<uint32_t>(mSceneIndices.size());
+
+    mSceneVertices.reserve(mSceneVertices.size() + static_cast<size_t>(count) * 24);
+    mSceneIndices.reserve(mSceneIndices.size() + static_cast<size_t>(count) * 36);
+
+    for (UINT i = 0; i < count; ++i)
+    {
+        const float scale = scaleDist(rng);
+        const float yaw = angleDist(rng);
+        const float pitch = angleDist(rng);
+        const XMFLOAT3 center(posXZ(rng), posY(rng), posXZ(rng));
+
+        const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(pitch, yaw, 0.0f);
+        const XMMATRIX world =
+            XMMatrixScaling(scale, scale, scale) *
+            rotation *
+            XMMatrixTranslation(center.x, center.y, center.z);
+
+        const uint32_t baseVertex = static_cast<uint32_t>(mSceneVertices.size());
+
+        for (const BoxVertex& bv : kUnitBoxVerts)
+        {
+            const XMVECTOR posWS = XMVector3Transform(XMLoadFloat3(&bv.pos), world);
+            const XMVECTOR nrmWS = XMVector3Normalize(
+                XMVector3TransformNormal(XMLoadFloat3(&bv.normal), rotation));
+
+            Vertex v;
+            XMStoreFloat3(&v.position, posWS);
+            XMStoreFloat3(&v.normal, nrmWS);
+            v.texcoord = bv.uv;
+            mSceneVertices.push_back(v);
+        }
+
+        for (uint32_t idx : kUnitBoxIndices)
+            mSceneIndices.push_back(baseVertex + idx);
+    }
+
+    Submesh cubesSubmesh;
+    cubesSubmesh.IndexStart = cubesIndexStart;
+    cubesSubmesh.IndexCount = static_cast<uint32_t>(mSceneIndices.size() - cubesIndexStart);
+    cubesSubmesh.MaterialName = "RandomCubes";
+    mSubmeshes.push_back(cubesSubmesh);
 }
 
 void DirectXApp::Shutdown() {
@@ -967,6 +1084,36 @@ bool DirectXApp::Initialize() {
             mat.HeightFormat);
 
         mMaterials.push_back(mat);
+    }
+
+    // ==== Procedurally scatter 1000 random cubes around the scene ====
+    {
+        Material cubeMat;
+        cubeMat.Name = "RandomCubes";
+        cubeMat.DiffuseSrvHeapIndex = srvIndex++;
+        cubeMat.NormalSrvHeapIndex = srvIndex++;
+        cubeMat.HeightSrvHeapIndex = srvIndex++;
+
+        CreateColorTexture({ 0.85f, 0.25f, 0.2f }, cubeMat.DiffuseTexture);
+        cubeMat.TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+        CreateColorTexture({ 0.5f, 0.5f, 1.0f }, cubeMat.NormalTexture);
+        cubeMat.NormalFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+        CreateColorTexture({ 0.5f, 0.5f, 0.5f }, cubeMat.HeightTexture);
+        cubeMat.HeightFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+        CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
+            1 + cubeMat.DiffuseSrvHeapIndex, cubeMat.DiffuseTexture.Get(), cubeMat.TextureFormat);
+        CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
+            1 + cubeMat.NormalSrvHeapIndex, cubeMat.NormalTexture.Get(), cubeMat.NormalFormat);
+        CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
+            1 + cubeMat.HeightSrvHeapIndex, cubeMat.HeightTexture.Get(), cubeMat.HeightFormat);
+
+        mMaterials.push_back(cubeMat);
+
+        BuildRandomCubes(300000);
+        UploadSceneGeometryBuffers();
     }
 
     BuildRootSignature();

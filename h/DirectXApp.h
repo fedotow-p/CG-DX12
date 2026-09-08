@@ -40,6 +40,8 @@ public:
     virtual void Update(const Timer& gt);
     virtual void Draw(const Timer& gt);
     void BuildObj(const std::string& path);
+    void UploadSceneGeometryBuffers();
+    void BuildRandomCubes(UINT count);
     virtual void CalculateFrameStats();
 
     // For Timer
