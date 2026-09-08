@@ -12,6 +12,7 @@
 #include "../h/d3dUtil.h"
 #include "../h/GBuffer.h"
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -423,7 +424,76 @@ void DirectXApp::BuildObj(const std::string& path)
         return;
     }
 
+    BuildSubmeshBounds();
     UploadSceneGeometryBuffers();
+}
+
+void DirectXApp::BuildSubmeshBounds()
+{
+    constexpr float kBoundsPadding = 0.2f;
+
+    for (Submesh& submesh : mSubmeshes)
+    {
+        submesh.HasBounds = false;
+
+        const size_t indexStart = submesh.IndexStart;
+        const size_t indexCount = submesh.IndexCount;
+        if (indexCount == 0 || indexStart >= mSceneIndices.size()
+            || indexCount > mSceneIndices.size() - indexStart)
+        {
+            continue;
+        }
+
+        XMFLOAT3 boundsMin(
+            (std::numeric_limits<float>::max)(),
+            (std::numeric_limits<float>::max)(),
+            (std::numeric_limits<float>::max)());
+        XMFLOAT3 boundsMax(
+            (std::numeric_limits<float>::lowest)(),
+            (std::numeric_limits<float>::lowest)(),
+            (std::numeric_limits<float>::lowest)());
+        bool valid = true;
+
+        for (size_t i = 0; i < indexCount; ++i)
+        {
+            const uint32_t vertexIndex = mSceneIndices[indexStart + i];
+            if (vertexIndex >= mSceneVertices.size())
+            {
+                valid = false;
+                break;
+            }
+
+            const XMFLOAT3& position = mSceneVertices[vertexIndex].position;
+            if (!std::isfinite(position.x) || !std::isfinite(position.y)
+                || !std::isfinite(position.z))
+            {
+                valid = false;
+                break;
+            }
+
+            boundsMin.x = (std::min)(boundsMin.x, position.x);
+            boundsMin.y = (std::min)(boundsMin.y, position.y);
+            boundsMin.z = (std::min)(boundsMin.z, position.z);
+            boundsMax.x = (std::max)(boundsMax.x, position.x);
+            boundsMax.y = (std::max)(boundsMax.y, position.y);
+            boundsMax.z = (std::max)(boundsMax.z, position.z);
+        }
+
+        if (!valid)
+            continue;
+
+        submesh.BoundsMin = {
+            boundsMin.x - kBoundsPadding,
+            boundsMin.y - kBoundsPadding,
+            boundsMin.z - kBoundsPadding
+        };
+        submesh.BoundsMax = {
+            boundsMax.x + kBoundsPadding,
+            boundsMax.y + kBoundsPadding,
+            boundsMax.z + kBoundsPadding
+        };
+        submesh.HasBounds = true;
+    }
 }
 
 // Uploads the current contents of mSceneVertices / mSceneIndices to the GPU.
@@ -500,10 +570,10 @@ void DirectXApp::UploadSceneGeometryBuffers()
 }
 
 // Generates `count` unit cubes at random positions/orientations/scales and
-// appends them directly (in world-space, pre-transformed) to the shared
-// scene vertex/index buffers as one extra Submesh drawn with the
-// "RandomCubes" material. Call UploadSceneGeometryBuffers() afterwards to
-// push the updated geometry to the GPU.
+// appends them (in world-space, pre-transformed) to the shared scene buffers.
+// Cubes are grouped into spatial Submeshes so whole off-screen groups can be
+// culled while sharing the "RandomCubes" material. Call
+// UploadSceneGeometryBuffers() afterwards to push the geometry to the GPU.
 void DirectXApp::BuildRandomCubes(UINT count)
 {
     if (count == 0)
@@ -516,6 +586,16 @@ void DirectXApp::BuildRandomCubes(UINT count)
     std::uniform_real_distribution<float> angleDist(0.0f, XM_2PI);
 
     struct BoxVertex { XMFLOAT3 pos; XMFLOAT3 normal; XMFLOAT2 uv; };
+    struct CubeChunk
+    {
+        std::vector<Vertex> Vertices;
+        std::vector<uint32_t> Indices;
+    };
+
+    constexpr int kGridSize = 8;
+    constexpr float kGridMin = -40.0f;
+    constexpr float kCellSize = 10.0f;
+    std::array<CubeChunk, kGridSize * kGridSize> chunks;
 
     // Standard 24-vertex unit box (unique verts per face for flat shading),
     // wound to be front-facing under CullMode BACK / FrontCounterClockwise=FALSE.
@@ -563,8 +643,6 @@ void DirectXApp::BuildRandomCubes(UINT count)
         20,21,22, 20,22,23  // right
     };
 
-    const uint32_t cubesIndexStart = static_cast<uint32_t>(mSceneIndices.size());
-
     mSceneVertices.reserve(mSceneVertices.size() + static_cast<size_t>(count) * 24);
     mSceneIndices.reserve(mSceneIndices.size() + static_cast<size_t>(count) * 36);
 
@@ -581,7 +659,16 @@ void DirectXApp::BuildRandomCubes(UINT count)
             rotation *
             XMMatrixTranslation(center.x, center.y, center.z);
 
-        const uint32_t baseVertex = static_cast<uint32_t>(mSceneVertices.size());
+        const int xCell = std::clamp(
+            static_cast<int>((center.x - kGridMin) / kCellSize),
+            0,
+            kGridSize - 1);
+        const int zCell = std::clamp(
+            static_cast<int>((center.z - kGridMin) / kCellSize),
+            0,
+            kGridSize - 1);
+        CubeChunk& chunk = chunks[zCell * kGridSize + xCell];
+        const uint32_t baseVertex = static_cast<uint32_t>(chunk.Vertices.size());
 
         for (const BoxVertex& bv : kUnitBoxVerts)
         {
@@ -593,18 +680,34 @@ void DirectXApp::BuildRandomCubes(UINT count)
             XMStoreFloat3(&v.position, posWS);
             XMStoreFloat3(&v.normal, nrmWS);
             v.texcoord = bv.uv;
-            mSceneVertices.push_back(v);
+            chunk.Vertices.push_back(v);
         }
 
         for (uint32_t idx : kUnitBoxIndices)
-            mSceneIndices.push_back(baseVertex + idx);
+            chunk.Indices.push_back(baseVertex + idx);
     }
 
-    Submesh cubesSubmesh;
-    cubesSubmesh.IndexStart = cubesIndexStart;
-    cubesSubmesh.IndexCount = static_cast<uint32_t>(mSceneIndices.size() - cubesIndexStart);
-    cubesSubmesh.MaterialName = "RandomCubes";
-    mSubmeshes.push_back(cubesSubmesh);
+    for (const CubeChunk& chunk : chunks)
+    {
+        if (chunk.Indices.empty())
+            continue;
+
+        const uint32_t globalVertexBase = static_cast<uint32_t>(mSceneVertices.size());
+        const uint32_t indexStart = static_cast<uint32_t>(mSceneIndices.size());
+
+        mSceneVertices.insert(
+            mSceneVertices.end(),
+            chunk.Vertices.begin(),
+            chunk.Vertices.end());
+        for (uint32_t idx : chunk.Indices)
+            mSceneIndices.push_back(globalVertexBase + idx);
+
+        Submesh cubesSubmesh;
+        cubesSubmesh.IndexStart = indexStart;
+        cubesSubmesh.IndexCount = static_cast<uint32_t>(chunk.Indices.size());
+        cubesSubmesh.MaterialName = "RandomCubes";
+        mSubmeshes.push_back(cubesSubmesh);
+    }
 }
 
 void DirectXApp::Shutdown() {
@@ -1112,7 +1215,8 @@ bool DirectXApp::Initialize() {
 
         mMaterials.push_back(cubeMat);
 
-        BuildRandomCubes(300000);
+        BuildRandomCubes(200000);
+        BuildSubmeshBounds();
         UploadSceneGeometryBuffers();
     }
 
@@ -1217,13 +1321,24 @@ void DirectXApp::OnResize() {
 }
 
 // Обработка клавиатуры
-void DirectXApp::OnKeyDown(WPARAM wParam)
+void DirectXApp::OnKeyDown(WPARAM wParam, LPARAM lParam)
 {
     // Проверяем, активное ли наше окно
     HWND activeWindow = GetActiveWindow();
     if (activeWindow != window.GetHwnd()) {
         OutputDebugStringA("Window not active!\n");
         return;
+    }
+
+    if (wParam == 'G' && (lParam & 0x40000000L) == 0)
+    {
+        mFrustumCullingEnabled = !mFrustumCullingEnabled;
+        char message[128];
+        sprintf_s(
+            message,
+            "Frustum culling: %s\n",
+            mFrustumCullingEnabled ? "ON" : "OFF");
+        OutputDebugStringA(message);
     }
 
     // Клавиша T включает/выключает анимацию текстур
@@ -1278,19 +1393,26 @@ int DirectXApp::Run() {
 
 void DirectXApp::CalculateFrameStats() {
     mFrameCount++;
-    if ((mTimer.TotalTime() - mTimeElapsed) >= 1.0f) {
-        float fps = (float)mFrameCount;
-        float mspf = 1000.0f / fps;
+
+    const float currentTime = mTimer.TotalTime();
+    const float elapsedTime = currentTime - mTimeElapsed;
+    if (elapsedTime >= 1.0f) {
+        const float fps = static_cast<float>(mFrameCount) / elapsedTime;
+        const float mspf = 1000.0f / fps;
+        const GeometryPassStats& stats = mRenderingSystem->GetGeometryPassStats();
 
         std::wstring windowText = mMainWndCaption;
-
-        windowText += L" FPS: " + std::to_wstring(fps);
+        windowText += L" FPS: " + std::to_wstring(static_cast<int>(fps + 0.5f));
         windowText += L" MSPF: " + std::to_wstring(mspf);
+        windowText += mFrustumCullingEnabled ? L" Culling: ON" : L" Culling: OFF";
+        windowText += L" Draws: " + std::to_wstring(stats.DrawnSubmeshes);
+        windowText += L" Culled: " + std::to_wstring(stats.CulledSubmeshes);
+        windowText += L" Indices: " + std::to_wstring(stats.SubmittedIndices);
 
         SetWindowText(window.GetHandle(), windowText.c_str());
 
         mFrameCount = 0;
-        mTimeElapsed += 1.0f;
+        mTimeElapsed = currentTime;
     }
 }
 
@@ -1349,6 +1471,7 @@ void DirectXApp::Update(const Timer& gt)
     XMStoreFloat4x4(&mProj, proj);
 
     XMMATRIX viewProj = view * proj;
+    mViewFrustum = Frustum::FromViewProjection(viewProj);
     XMMATRIX invViewProj = XMMatrixInverse(nullptr, viewProj);
 
     CameraConstants camConstants;
@@ -1584,6 +1707,8 @@ void DirectXApp::Draw(const Timer& gt)
         mCbvSrvUavDescriptorSize,
         mSubmeshes,
         mMaterials,
+        mViewFrustum,
+        mFrustumCullingEnabled,
         mVertexBufferGPU.Get(),
         mIndexBufferGPU.Get(),
         mVertexBufferView,

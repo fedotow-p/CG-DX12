@@ -274,6 +274,8 @@ void RenderingSystem::GeometryPass(
     UINT cbvSrvDescriptorSize,
     const std::vector<Submesh>& submeshes,
     const std::vector<Material>& materials,
+    const Frustum& frustum,
+    bool enableFrustumCulling,
     ID3D12Resource* vertexBuffer,
     ID3D12Resource* indexBuffer,
     const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
@@ -329,8 +331,18 @@ void RenderingSystem::GeometryPass(
     mCommandList->IASetVertexBuffers(0, 1, &vertexBufferView);
     mCommandList->IASetIndexBuffer(&indexBufferView);
 
-    for (auto& sm : submeshes)
+    mGeometryPassStats = {};
+    mGeometryPassStats.TotalSubmeshes = static_cast<UINT>(submeshes.size());
+    for (const auto& sm : submeshes)
     {
+        if (enableFrustumCulling && sm.HasBounds
+            && !frustum.IntersectsAabb(sm.BoundsMin, sm.BoundsMax))
+        {
+            mGeometryPassStats.CulledSubmeshes++;
+            mGeometryPassStats.CulledIndices += sm.IndexCount;
+            continue;
+        }
+
         const Material* mat = nullptr;
         for (auto& m : materials)
         {
@@ -341,7 +353,11 @@ void RenderingSystem::GeometryPass(
             }
         }
 
-        if (!mat) continue;
+        if (!mat)
+        {
+            mGeometryPassStats.MissingMaterials++;
+            continue;
+        }
 
         // Root Parameter 1: SRV for main texture
         D3D12_GPU_DESCRIPTOR_HANDLE srvHandle1 =
@@ -366,6 +382,8 @@ void RenderingSystem::GeometryPass(
         mCommandList->SetGraphicsRoot32BitConstant(4, *reinterpret_cast<const UINT*>(&isFlag), 0);
 
         mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
+        mGeometryPassStats.DrawnSubmeshes++;
+        mGeometryPassStats.SubmittedIndices += sm.IndexCount;
     }
 
     // Переводим G-буфер текстуры обратно в PIXEL_SHADER_RESOURCE

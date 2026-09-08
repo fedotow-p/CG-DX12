@@ -164,7 +164,7 @@ LRESULT CALLBACK Window::WindowProc(HWND hWnd, UINT message,
                 return 0;
             }
             if (window && window->GetDirectXApp()) {
-                window->GetDirectXApp()->OnKeyDown(wParam);
+                window->GetDirectXApp()->OnKeyDown(wParam, lParam);
             }
             break;
 

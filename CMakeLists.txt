@@ -15,6 +15,7 @@ add_executable(CG_DX12
         h/InputDevice.h
         h/Material.h
         h/MathHelper.h
+        h/Frustum.h
         h/ObjectConstants.h
         src/Parser.cpp
         h/Parser.h

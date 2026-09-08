@@ -9,11 +9,22 @@
 #include "UploadBuffer.h"
 #include "Light.h"
 #include "Submesh.h"
+#include "Frustum.h"
 #include "Material.h"
 #include "GBuffer.h"
 #include "CameraConstants.h"
 
 using Microsoft::WRL::ComPtr;
+
+struct GeometryPassStats
+{
+    UINT TotalSubmeshes = 0;
+    UINT CulledSubmeshes = 0;
+    UINT DrawnSubmeshes = 0;
+    UINT MissingMaterials = 0;
+    UINT64 CulledIndices = 0;
+    UINT64 SubmittedIndices = 0;
+};
 
 class RenderingSystem
 {
@@ -38,6 +49,8 @@ public:
         UINT cbvSrvDescriptorSize,
         const std::vector<Submesh>& submeshes,
         const std::vector<Material>& materials,
+        const Frustum& frustum,
+        bool enableFrustumCulling,
         ID3D12Resource* vertexBuffer,
         ID3D12Resource* indexBuffer,
         const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
@@ -69,9 +82,11 @@ public:
     UploadBuffer<LightConstants>* GetLightingCB() { return mLightingCB.get(); }
     ID3D12PipelineState* GetLightingPSO() { return mLightingPSO.Get(); }
     ID3D12RootSignature* GetLightingRootSignature() { return mLightingRootSignature.Get(); }
+    const GeometryPassStats& GetGeometryPassStats() const { return mGeometryPassStats; }
 
 private:
     std::vector<Light> mLights;
+    GeometryPassStats mGeometryPassStats;
     bool CreateGBuffer(UINT width, UINT height);
     bool CreateLightingResources();
 

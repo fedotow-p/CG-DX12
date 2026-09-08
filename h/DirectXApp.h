@@ -19,6 +19,7 @@
 #include "Material.h"
 #include "MathHelper.h"
 #include "Submesh.h"
+#include "Frustum.h"
 #include "ThrowIfFailed.h"
 #include "Window.h"
 #include "GBuffer.h"
@@ -59,7 +60,7 @@ public:
     virtual void OnResize();
 
     // Keyboard
-    virtual void OnKeyDown(WPARAM wParam);
+    virtual void OnKeyDown(WPARAM wParam, LPARAM lParam);
 
     void SetDirectXApp(DirectXApp* app) { dxApp = app; }
     DirectXApp* GetDirectXApp() const { return dxApp; }
@@ -89,6 +90,7 @@ private:
         const DirectX::XMVECTOR& v1,
         const DirectX::XMVECTOR& v2,
         float& distance);
+    void BuildSubmeshBounds();
 
 
     std::vector<Light> mLights;
@@ -113,6 +115,8 @@ private:
 
     std::vector<Submesh> mSubmeshes;
     std::vector<Material> mMaterials;
+    Frustum mViewFrustum;
+    bool mFrustumCullingEnabled = true;
     std::vector<Vertex> mSceneVertices;
     std::vector<uint32_t> mSceneIndices;
     DXGI_FORMAT mSecondaryTextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
