@@ -16,6 +16,7 @@ add_executable(CG_DX12
         h/Material.h
         h/MathHelper.h
         h/Frustum.h
+        h/Octree.h
         h/ObjectConstants.h
         src/Parser.cpp
         h/Parser.h

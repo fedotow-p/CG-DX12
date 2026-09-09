@@ -274,8 +274,8 @@ void RenderingSystem::GeometryPass(
     UINT cbvSrvDescriptorSize,
     const std::vector<Submesh>& submeshes,
     const std::vector<Material>& materials,
-    const Frustum& frustum,
-    bool enableFrustumCulling,
+    const std::vector<uint32_t>& visibleSubmeshIndices,
+    const OctreeTraversalStats& traversalStats,
     ID3D12Resource* vertexBuffer,
     ID3D12Resource* indexBuffer,
     const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
@@ -332,16 +332,19 @@ void RenderingSystem::GeometryPass(
     mCommandList->IASetIndexBuffer(&indexBufferView);
 
     mGeometryPassStats = {};
-    mGeometryPassStats.TotalSubmeshes = static_cast<UINT>(submeshes.size());
-    for (const auto& sm : submeshes)
+    mGeometryPassStats.TotalSubmeshes = traversalStats.TotalSubmeshes;
+    mGeometryPassStats.BoundedSubmeshes = traversalStats.BoundedSubmeshes;
+    mGeometryPassStats.UnboundedSubmeshes = traversalStats.UnboundedSubmeshes;
+    mGeometryPassStats.CandidateSubmeshes = traversalStats.CandidateSubmeshes;
+    mGeometryPassStats.CulledSubmeshes = traversalStats.CulledSubmeshes;
+    mGeometryPassStats.NodesTested = traversalStats.NodesTested;
+    mGeometryPassStats.NodesRejected = traversalStats.NodesRejected;
+    for (const uint32_t submeshIndex : visibleSubmeshIndices)
     {
-        if (enableFrustumCulling && sm.HasBounds
-            && !frustum.IntersectsAabb(sm.BoundsMin, sm.BoundsMax))
-        {
-            mGeometryPassStats.CulledSubmeshes++;
-            mGeometryPassStats.CulledIndices += sm.IndexCount;
+        if (submeshIndex >= submeshes.size())
             continue;
-        }
+
+        const Submesh& sm = submeshes[submeshIndex];
 
         const Material* mat = nullptr;
         for (auto& m : materials)

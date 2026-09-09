@@ -17,6 +17,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <numeric>
 #include <random>
 
 #pragma comment(lib, "d3d12.lib")
@@ -424,7 +425,7 @@ void DirectXApp::BuildObj(const std::string& path)
         return;
     }
 
-    BuildSubmeshBounds();
+    RebuildSpatialIndex();
     UploadSceneGeometryBuffers();
 }
 
@@ -494,6 +495,42 @@ void DirectXApp::BuildSubmeshBounds()
         };
         submesh.HasBounds = true;
     }
+}
+
+void DirectXApp::RebuildSpatialIndex()
+{
+    BuildSubmeshBounds();
+    mSubmeshOctree.Rebuild(mSubmeshes);
+    mVisibleSubmeshIndices.reserve(mSubmeshes.size());
+}
+
+void DirectXApp::BuildVisibleSubmeshList()
+{
+    if (mSpatialCullingEnabled)
+    {
+        mSubmeshOctree.GatherVisible(
+            mViewFrustum,
+            mVisibleSubmeshIndices,
+            mOctreeTraversalStats);
+    }
+    else
+    {
+        mVisibleSubmeshIndices.resize(mSubmeshes.size());
+        std::iota(mVisibleSubmeshIndices.begin(), mVisibleSubmeshIndices.end(), 0u);
+
+        mOctreeTraversalStats = {};
+        mOctreeTraversalStats.TotalSubmeshes = static_cast<UINT>(mSubmeshes.size());
+        mOctreeTraversalStats.CandidateSubmeshes = static_cast<UINT>(mSubmeshes.size());
+        for (const Submesh& submesh : mSubmeshes)
+        {
+            if (submesh.HasBounds)
+                ++mOctreeTraversalStats.BoundedSubmeshes;
+            else
+                ++mOctreeTraversalStats.UnboundedSubmeshes;
+        }
+    }
+
+    std::sort(mVisibleSubmeshIndices.begin(), mVisibleSubmeshIndices.end());
 }
 
 // Uploads the current contents of mSceneVertices / mSceneIndices to the GPU.
@@ -1216,7 +1253,7 @@ bool DirectXApp::Initialize() {
         mMaterials.push_back(cubeMat);
 
         BuildRandomCubes(200000);
-        BuildSubmeshBounds();
+        RebuildSpatialIndex();
         UploadSceneGeometryBuffers();
     }
 
@@ -1332,12 +1369,12 @@ void DirectXApp::OnKeyDown(WPARAM wParam, LPARAM lParam)
 
     if (wParam == 'G' && (lParam & 0x40000000L) == 0)
     {
-        mFrustumCullingEnabled = !mFrustumCullingEnabled;
+        mSpatialCullingEnabled = !mSpatialCullingEnabled;
         char message[128];
         sprintf_s(
             message,
-            "Frustum culling: %s\n",
-            mFrustumCullingEnabled ? "ON" : "OFF");
+            "Spatial culling (octree + frustum): %s\n",
+            mSpatialCullingEnabled ? "ON" : "OFF");
         OutputDebugStringA(message);
     }
 
@@ -1404,9 +1441,12 @@ void DirectXApp::CalculateFrameStats() {
         std::wstring windowText = mMainWndCaption;
         windowText += L" FPS: " + std::to_wstring(static_cast<int>(fps + 0.5f));
         windowText += L" MSPF: " + std::to_wstring(mspf);
-        windowText += mFrustumCullingEnabled ? L" Culling: ON" : L" Culling: OFF";
+        windowText += mSpatialCullingEnabled ? L" Culling: ON" : L" Culling: OFF";
+        windowText += L" Candidates: " + std::to_wstring(stats.CandidateSubmeshes);
         windowText += L" Draws: " + std::to_wstring(stats.DrawnSubmeshes);
         windowText += L" Culled: " + std::to_wstring(stats.CulledSubmeshes);
+        windowText += L" Nodes: " + std::to_wstring(stats.NodesTested);
+        windowText += L" Rejected: " + std::to_wstring(stats.NodesRejected);
         windowText += L" Indices: " + std::to_wstring(stats.SubmittedIndices);
 
         SetWindowText(window.GetHandle(), windowText.c_str());
@@ -1472,6 +1512,7 @@ void DirectXApp::Update(const Timer& gt)
 
     XMMATRIX viewProj = view * proj;
     mViewFrustum = Frustum::FromViewProjection(viewProj);
+    BuildVisibleSubmeshList();
     XMMATRIX invViewProj = XMMatrixInverse(nullptr, viewProj);
 
     CameraConstants camConstants;
@@ -1707,8 +1748,8 @@ void DirectXApp::Draw(const Timer& gt)
         mCbvSrvUavDescriptorSize,
         mSubmeshes,
         mMaterials,
-        mViewFrustum,
-        mFrustumCullingEnabled,
+        mVisibleSubmeshIndices,
+        mOctreeTraversalStats,
         mVertexBufferGPU.Get(),
         mIndexBufferGPU.Get(),
         mVertexBufferView,

@@ -9,7 +9,7 @@
 #include "UploadBuffer.h"
 #include "Light.h"
 #include "Submesh.h"
-#include "Frustum.h"
+#include "Octree.h"
 #include "Material.h"
 #include "GBuffer.h"
 #include "CameraConstants.h"
@@ -19,7 +19,12 @@ using Microsoft::WRL::ComPtr;
 struct GeometryPassStats
 {
     UINT TotalSubmeshes = 0;
+    UINT BoundedSubmeshes = 0;
+    UINT UnboundedSubmeshes = 0;
+    UINT CandidateSubmeshes = 0;
     UINT CulledSubmeshes = 0;
+    UINT NodesTested = 0;
+    UINT NodesRejected = 0;
     UINT DrawnSubmeshes = 0;
     UINT MissingMaterials = 0;
     UINT64 CulledIndices = 0;
@@ -49,8 +54,8 @@ public:
         UINT cbvSrvDescriptorSize,
         const std::vector<Submesh>& submeshes,
         const std::vector<Material>& materials,
-        const Frustum& frustum,
-        bool enableFrustumCulling,
+        const std::vector<uint32_t>& visibleSubmeshIndices,
+        const OctreeTraversalStats& traversalStats,
         ID3D12Resource* vertexBuffer,
         ID3D12Resource* indexBuffer,
         const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,

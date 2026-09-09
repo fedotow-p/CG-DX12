@@ -20,6 +20,7 @@
 #include "MathHelper.h"
 #include "Submesh.h"
 #include "Frustum.h"
+#include "Octree.h"
 #include "ThrowIfFailed.h"
 #include "Window.h"
 #include "GBuffer.h"
@@ -91,6 +92,8 @@ private:
         const DirectX::XMVECTOR& v2,
         float& distance);
     void BuildSubmeshBounds();
+    void RebuildSpatialIndex();
+    void BuildVisibleSubmeshList();
 
 
     std::vector<Light> mLights;
@@ -116,7 +119,10 @@ private:
     std::vector<Submesh> mSubmeshes;
     std::vector<Material> mMaterials;
     Frustum mViewFrustum;
-    bool mFrustumCullingEnabled = true;
+    SubmeshOctree mSubmeshOctree;
+    std::vector<uint32_t> mVisibleSubmeshIndices;
+    OctreeTraversalStats mOctreeTraversalStats;
+    bool mSpatialCullingEnabled = true;
     std::vector<Vertex> mSceneVertices;
     std::vector<uint32_t> mSceneIndices;
     DXGI_FORMAT mSecondaryTextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
