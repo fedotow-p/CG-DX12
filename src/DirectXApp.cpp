@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <filesystem>
 #include <limits>
@@ -531,6 +532,60 @@ void DirectXApp::BuildVisibleSubmeshList()
     }
 
     std::sort(mVisibleSubmeshIndices.begin(), mVisibleSubmeshIndices.end());
+}
+
+void DirectXApp::UpdateCascadeConstants(const XMMATRIX& viewProj, const XMFLOAT3& lightDirection)
+{
+    constexpr float cameraNear = 0.1f, cameraFar = 1000.0f, shadowDistance = 150.0f, splitLambda = 0.85f;
+    std::array<float, CameraConstants::CascadeCount> splits = {};
+    for (UINT i = 0; i < CameraConstants::CascadeCount; ++i)
+    {
+        const float p = static_cast<float>(i + 1) / CameraConstants::CascadeCount;
+        const float logarithmic = cameraNear * powf(shadowDistance / cameraNear, p);
+        const float linear = cameraNear + (shadowDistance - cameraNear) * p;
+        splits[i] = splitLambda * logarithmic + (1.0f - splitLambda) * linear;
+    }
+    mCameraConstants.mCascadeSplits = { splits[0], splits[1], splits[2], splits[3] };
+
+    const XMMATRIX inverse = XMMatrixInverse(nullptr, viewProj);
+    const XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirection));
+    const XMVECTOR up = fabsf(XMVectorGetY(lightDir)) > 0.95f ? XMVectorSet(0, 0, 1, 0) : XMVectorSet(0, 1, 0, 0);
+    float previousSplit = cameraNear;
+    for (UINT cascade = 0; cascade < CameraConstants::CascadeCount; ++cascade)
+    {
+        const float nearRatio = (previousSplit - cameraNear) / (cameraFar - cameraNear);
+        const float farRatio = (splits[cascade] - cameraNear) / (cameraFar - cameraNear);
+        std::array<XMVECTOR, 8> corners;
+        XMVECTOR center = XMVectorZero();
+        UINT index = 0;
+        for (int z = 0; z <= 1; ++z) for (int y = 0; y <= 1; ++y) for (int x = 0; x <= 1; ++x)
+        {
+            const float ndcX = x ? 1.0f : -1.0f, ndcY = y ? 1.0f : -1.0f;
+            XMVECTOR nearPoint = XMVector4Transform(XMVectorSet(ndcX, ndcY, 0.0f, 1.0f), inverse);
+            XMVECTOR farPoint = XMVector4Transform(XMVectorSet(ndcX, ndcY, 1.0f, 1.0f), inverse);
+            nearPoint /= XMVectorSplatW(nearPoint);
+            farPoint /= XMVectorSplatW(farPoint);
+            corners[index] = XMVectorLerp(nearPoint, farPoint, z ? farRatio : nearRatio);
+            center += corners[index++];
+        }
+        center /= 8.0f;
+        const XMMATRIX lightView = XMMatrixLookAtLH(center - lightDir * 200.0f, center, up);
+        XMVECTOR minPoint = XMVectorSet(FLT_MAX, FLT_MAX, FLT_MAX, 1.0f);
+        XMVECTOR maxPoint = XMVectorSet(-FLT_MAX, -FLT_MAX, -FLT_MAX, 1.0f);
+        for (const XMVECTOR corner : corners)
+        {
+            const XMVECTOR point = XMVector3TransformCoord(corner, lightView);
+            minPoint = XMVectorMin(minPoint, point);
+            maxPoint = XMVectorMax(maxPoint, point);
+        }
+        constexpr float padding = 4.0f;
+        const float nearPlane = max(0.1f, XMVectorGetZ(minPoint) - 50.0f);
+        const float farPlane = XMVectorGetZ(maxPoint) + 50.0f;
+        XMStoreFloat4x4(&mCameraConstants.mCascadeViewProj[cascade], XMMatrixTranspose(lightView *
+            XMMatrixOrthographicOffCenterLH(XMVectorGetX(minPoint) - padding, XMVectorGetX(maxPoint) + padding,
+                XMVectorGetY(minPoint) - padding, XMVectorGetY(maxPoint) + padding, nearPlane, farPlane)));
+        previousSplit = splits[cascade];
+    }
 }
 
 // Uploads the current contents of mSceneVertices / mSceneIndices to the GPU.
@@ -1515,11 +1570,15 @@ void DirectXApp::Update(const Timer& gt)
     BuildVisibleSubmeshList();
     XMMATRIX invViewProj = XMMatrixInverse(nullptr, viewProj);
 
-    CameraConstants camConstants;
-    XMStoreFloat4x4(&camConstants.mInvViewProj, XMMatrixTranspose(invViewProj));
-    camConstants.mCameraPos = mEyePos;                     // позиция камеры
-    camConstants.mScreenSize = { (float)mClientWidth, (float)mClientHeight };
-    mCameraCB->CopyData(0, camConstants);
+    XMStoreFloat4x4(&mCameraConstants.mInvViewProj, XMMatrixTranspose(invViewProj));
+    XMStoreFloat4x4(&mCameraConstants.mView, XMMatrixTranspose(view));
+    mCameraConstants.mCameraPos = mEyePos;
+    mCameraConstants.mScreenSize = { (float)mClientWidth, (float)mClientHeight };
+    const auto directional = std::find_if(mLights.begin(), mLights.end(),
+        [](const Light& light) { return light.Type == LIGHT_DIRECTIONAL; });
+    if (directional != mLights.end())
+        UpdateCascadeConstants(viewProj, directional->Direction);
+    mCameraCB->CopyData(0, mCameraConstants);
 
     if (mPendingLightProjectileSpawn)
     {
@@ -1741,6 +1800,13 @@ bool DirectXApp::RayIntersectsTriangle(
 
 void DirectXApp::Draw(const Timer& gt)
 {
+    mRenderingSystem->ShadowPass(
+        mSubmeshes,
+        mVertexBufferGPU.Get(),
+        mIndexBufferGPU.Get(),
+        mVertexBufferView,
+        mIndexBufferView,
+        mCameraConstants);
     mRenderingSystem->GeometryPass(
         mPSO.Get(),
         mRootSignature.Get(),

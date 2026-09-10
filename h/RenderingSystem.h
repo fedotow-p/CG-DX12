@@ -13,6 +13,7 @@
 #include "Material.h"
 #include "GBuffer.h"
 #include "CameraConstants.h"
+#include "ObjectConstants.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -80,6 +81,14 @@ public:
         UploadBuffer<CameraConstants>* cameraCB,
         GBuffer* gBuffer);
 
+    void ShadowPass(
+        const std::vector<Submesh>& submeshes,
+        ID3D12Resource* vertexBuffer,
+        ID3D12Resource* indexBuffer,
+        const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
+        const D3D12_INDEX_BUFFER_VIEW& indexBufferView,
+        const CameraConstants& cameraConstants);
+
     void Shutdown();
     void FlushCommandQueue();
 
@@ -111,6 +120,12 @@ private:
     ComPtr<ID3D12PipelineState> mLightingPSO;
     ComPtr<ID3D12RootSignature> mLightingRootSignature;
     std::unique_ptr<UploadBuffer<LightConstants>> mLightingCB;
+    std::unique_ptr<UploadBuffer<ObjectConstants>> mShadowCB;
+    ComPtr<ID3D12Resource> mShadowMap;
+    ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap;
+    ComPtr<ID3D12DescriptorHeap> mLightingSrvHeap;
+    ComPtr<ID3D12PipelineState> mShadowPSO;
+    ComPtr<ID3D12RootSignature> mShadowRootSignature;
 
     // Размеры дескрипторов
     UINT mRtvDescriptorSize = 0;

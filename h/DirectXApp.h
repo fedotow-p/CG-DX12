@@ -94,6 +94,7 @@ private:
     void BuildSubmeshBounds();
     void RebuildSpatialIndex();
     void BuildVisibleSubmeshList();
+    void UpdateCascadeConstants(const DirectX::XMMATRIX& viewProj, const DirectX::XMFLOAT3& lightDirection);
 
 
     std::vector<Light> mLights;
@@ -177,6 +178,7 @@ private:
     DXGI_FORMAT mDepthStencilFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
     std::unique_ptr<UploadBuffer<CameraConstants>> mCameraCB;
+    CameraConstants mCameraConstants;
 
     // ScreenSize
     int mClientWidth = 800;

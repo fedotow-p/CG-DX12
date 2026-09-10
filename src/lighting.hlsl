@@ -1,7 +1,9 @@
 Texture2D gAlbedoMap : register(t0);
 Texture2D gNormalMap : register(t1);
 Texture2D gDepthMap : register(t2);
+Texture2DArray gShadowMap : register(t3);
 SamplerState gSampler : register(s0);
+SamplerComparisonState gShadowSampler : register(s1);
 
 cbuffer cbLighting : register(b0)
 {
@@ -20,10 +22,13 @@ cbuffer cbLighting : register(b0)
 cbuffer cbCamera : register(b1)
 {
     float4x4 mInvViewProj;
+    float4x4 mView;
+    float4x4 mCascadeViewProj[4];
     float3 mCameraPos;
     float padding1;
     float2 mScreenSize;
     float2 padding2;
+    float4 mCascadeSplits;
 };
 
 
@@ -67,6 +72,31 @@ PSInput VS(VSInput vin)
     return vout;
 }
 
+float GetShadowFactor(float3 worldPos)
+{
+    float viewDepth = abs(mul(float4(worldPos, 1.0f), mView).z);
+    uint cascadeIndex = viewDepth <= mCascadeSplits.x ? 0 :
+                        viewDepth <= mCascadeSplits.y ? 1 :
+                        viewDepth <= mCascadeSplits.z ? 2 : 3;
+
+    float4 lightPos = mul(float4(worldPos, 1.0f), mCascadeViewProj[cascadeIndex]);
+    float3 shadowCoord = lightPos.xyz / lightPos.w;
+    float2 uv = float2(shadowCoord.x * 0.5f + 0.5f, 1.0f - (shadowCoord.y * 0.5f + 0.5f));
+    if (any(uv < 0.0f) || any(uv > 1.0f) || shadowCoord.z <= 0.0f || shadowCoord.z >= 1.0f)
+        return 1.0f;
+
+    // 3x3 PCF: each comparison is hardware-filtered by SampleCmpLevelZero.
+    const float texelSize = 1.0f / 2048.0f;
+    float visibility = 0.0f;
+    [unroll] for (int y = -1; y <= 1; ++y)
+    {
+        [unroll] for (int x = -1; x <= 1; ++x)
+            visibility += gShadowMap.SampleCmpLevelZero(gShadowSampler,
+                float3(uv + float2(x, y) * texelSize, cascadeIndex), shadowCoord.z - 0.0015f);
+    }
+    return visibility / 9.0f;
+}
+
 float4 PS(PSInput pin) : SV_Target
 {
     float4 albedo = gAlbedoMap.Sample(gSampler, pin.TexC);
@@ -98,7 +128,7 @@ float4 PS(PSInput pin) : SV_Target
     {
         float3 lightDir = normalize(-gLightDir);
         float diff = max(dot(normal, lightDir), 0.0f);
-        result = diff * gLightColor * gLightIntensity * albedo.rgb;
+        result = diff * gLightColor * gLightIntensity * albedo.rgb * GetShadowFactor(worldPos);
     }
     if (gLightType == LIGHT_POINT)
     {
