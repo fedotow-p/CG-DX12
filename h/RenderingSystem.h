@@ -4,6 +4,7 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <memory>
+#include <array>
 #include <vector>
 #include <string>
 #include "UploadBuffer.h"
@@ -83,6 +84,7 @@ public:
 
     void ShadowPass(
         const std::vector<Submesh>& submeshes,
+        const std::array<std::vector<uint32_t>, CameraConstants::CascadeCount>& visibleSubmeshIndices,
         ID3D12Resource* vertexBuffer,
         ID3D12Resource* indexBuffer,
         const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
@@ -126,6 +128,15 @@ private:
     ComPtr<ID3D12DescriptorHeap> mLightingSrvHeap;
     ComPtr<ID3D12PipelineState> mShadowPSO;
     ComPtr<ID3D12RootSignature> mShadowRootSignature;
+    ComPtr<ID3D12CommandAllocator> mShadowCommandAllocator;
+    ComPtr<ID3D12CommandAllocator> mGeometryCommandAllocator;
+    ComPtr<ID3D12CommandAllocator> mLightingCommandAllocator;
+    UINT64 mNextFenceValue = 1;
+    UINT64 mShadowFenceValue = 0;
+    UINT64 mGeometryFenceValue = 0;
+    UINT64 mLightingFenceValue = 0;
+    void PrepareCommandAllocator(ID3D12CommandAllocator* allocator, UINT64 completedFenceValue);
+    void SubmitCommandList(UINT64& fenceValue);
 
     // Размеры дескрипторов
     UINT mRtvDescriptorSize = 0;

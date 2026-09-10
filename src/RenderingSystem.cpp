@@ -39,6 +39,7 @@ RenderingSystem::RenderingSystem(
     mRtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     mDsvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
     mCbvSrvUavDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    mNextFenceValue = mFence->GetCompletedValue() + 1;
 }
 
 RenderingSystem::~RenderingSystem()
@@ -51,6 +52,10 @@ bool RenderingSystem::Initialize(UINT width, UINT height)
     mWidth = width;
     mHeight = height;
 
+    ThrowIfFailed(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mShadowCommandAllocator)));
+    ThrowIfFailed(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mGeometryCommandAllocator)));
+    ThrowIfFailed(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mLightingCommandAllocator)));
+
     if (!CreateGBuffer(width, height))
         return false;
 
@@ -58,6 +63,26 @@ bool RenderingSystem::Initialize(UINT width, UINT height)
         return false;
 
     return true;
+}
+
+void RenderingSystem::PrepareCommandAllocator(ID3D12CommandAllocator* allocator, UINT64 completedFenceValue)
+{
+    if (completedFenceValue != 0 && mFence->GetCompletedValue() < completedFenceValue)
+    {
+        HANDLE eventHandle = CreateEventEx(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+        ThrowIfFailed(mFence->SetEventOnCompletion(completedFenceValue, eventHandle));
+        WaitForSingleObject(eventHandle, INFINITE);
+        CloseHandle(eventHandle);
+    }
+    ThrowIfFailed(allocator->Reset());
+}
+
+void RenderingSystem::SubmitCommandList(UINT64& fenceValue)
+{
+    ID3D12CommandList* commandLists[] = { mCommandList };
+    mCommandQueue->ExecuteCommandLists(1, commandLists);
+    fenceValue = mNextFenceValue++;
+    ThrowIfFailed(mCommandQueue->Signal(mFence, fenceValue));
 }
 
 bool RenderingSystem::CreateGBuffer(UINT width, UINT height)
@@ -355,13 +380,17 @@ bool RenderingSystem::CreateLightingResources()
     return true;
 }
 
-void RenderingSystem::ShadowPass(const std::vector<Submesh>& submeshes, ID3D12Resource*, ID3D12Resource*,
+void RenderingSystem::ShadowPass(const std::vector<Submesh>& submeshes,
+    const std::array<std::vector<uint32_t>, CameraConstants::CascadeCount>& visibleSubmeshIndices,
+    ID3D12Resource*, ID3D12Resource*,
     const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView, const D3D12_INDEX_BUFFER_VIEW& indexBufferView,
     const CameraConstants& cameraConstants)
 {
     constexpr UINT shadowMapSize = 2048;
-    mCommandAllocator->Reset();
-    mCommandList->Reset(mCommandAllocator, mShadowPSO.Get());
+    // The scene uses single upload buffers for object and camera constants.
+    // Wait for the prior frame before those buffers are overwritten on Update.
+    PrepareCommandAllocator(mShadowCommandAllocator.Get(), mLightingFenceValue);
+    ThrowIfFailed(mCommandList->Reset(mShadowCommandAllocator.Get(), mShadowPSO.Get()));
     auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(mShadowMap.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         D3D12_RESOURCE_STATE_DEPTH_WRITE);
     mCommandList->ResourceBarrier(1, &barrier);
@@ -383,15 +412,19 @@ void RenderingSystem::ShadowPass(const std::vector<Submesh>& submeshes, ID3D12Re
         mCommandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         mCommandList->OMSetRenderTargets(0, nullptr, false, &dsv);
         mCommandList->SetGraphicsRootConstantBufferView(0, mShadowCB->Resource()->GetGPUVirtualAddress() + cascade * mShadowCB->GetElementSize());
-        for (const Submesh& sm : submeshes)
+        for (const uint32_t submeshIndex : visibleSubmeshIndices[cascade])
+        {
+            if (submeshIndex >= submeshes.size())
+                continue;
+            const Submesh& sm = submeshes[submeshIndex];
             mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
+        }
     }
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(mShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     mCommandList->ResourceBarrier(1, &barrier);
     ThrowIfFailed(mCommandList->Close());
-    ID3D12CommandList* lists[] = { mCommandList };
-    mCommandQueue->ExecuteCommandLists(1, lists);
+    SubmitCommandList(mShadowFenceValue);
 }
 
 void RenderingSystem::GeometryPass(
@@ -414,8 +447,8 @@ void RenderingSystem::GeometryPass(
 {
     if (!mGBuffer) return;
 
-    mCommandAllocator->Reset();
-    mCommandList->Reset(mCommandAllocator, pso);
+    PrepareCommandAllocator(mGeometryCommandAllocator.Get(), mGeometryFenceValue);
+    ThrowIfFailed(mCommandList->Reset(mGeometryCommandAllocator.Get(), pso));
 
     // Переводим G-буфер текстуры в состояние RENDER_TARGET
     D3D12_RESOURCE_BARRIER barriers[GBuffer::GBUFFER_COUNT];
@@ -535,8 +568,7 @@ void RenderingSystem::GeometryPass(
 
     mCommandList->Close();
 
-    ID3D12CommandList* cmdLists[] = { mCommandList };
-    mCommandQueue->ExecuteCommandLists(1, cmdLists);
+    SubmitCommandList(mGeometryFenceValue);
 }
 
 void RenderingSystem::LightingPass(
@@ -554,8 +586,8 @@ void RenderingSystem::LightingPass(
     UploadBuffer<CameraConstants>* cameraCB,
     GBuffer* gBuffer)
 {
-    mCommandAllocator->Reset();
-    mCommandList->Reset(mCommandAllocator, lightingPSO);
+    PrepareCommandAllocator(mLightingCommandAllocator.Get(), mLightingFenceValue);
+    ThrowIfFailed(mCommandList->Reset(mLightingCommandAllocator.Get(), lightingPSO));
 
     D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
         backBuffer,
@@ -620,8 +652,7 @@ void RenderingSystem::LightingPass(
 
     mCommandList->Close();
 
-    ID3D12CommandList* cmdLists[] = { mCommandList };
-    mCommandQueue->ExecuteCommandLists(1, cmdLists);
+    SubmitCommandList(mLightingFenceValue);
 
     swapChain->Present(0, 0);
     currBackBufferIndex = (currBackBufferIndex + 1) % mSwapChainBufferCount;
@@ -646,11 +677,14 @@ void RenderingSystem::Shutdown()
     mShadowMap.Reset();
     mShadowDsvHeap.Reset();
     mLightingSrvHeap.Reset();
+    mShadowCommandAllocator.Reset();
+    mGeometryCommandAllocator.Reset();
+    mLightingCommandAllocator.Reset();
 }
 
 void RenderingSystem::FlushCommandQueue()
 {
-    static UINT64 fenceValue = 1;
+    const UINT64 fenceValue = mNextFenceValue++;
 
     mCommandQueue->Signal(mFence, fenceValue);
 
@@ -661,6 +695,4 @@ void RenderingSystem::FlushCommandQueue()
         WaitForSingleObject(eventHandle, INFINITE);
         CloseHandle(eventHandle);
     }
-
-    fenceValue++;
 }

@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <array>
 #include <windows.h>
 #include <wrl/client.h>
 #include "../h/ObjectConstants.h"
@@ -94,6 +95,7 @@ private:
     void BuildSubmeshBounds();
     void RebuildSpatialIndex();
     void BuildVisibleSubmeshList();
+    void BuildVisibleShadowSubmeshLists();
     void UpdateCascadeConstants(const DirectX::XMMATRIX& viewProj, const DirectX::XMFLOAT3& lightDirection);
 
 
@@ -122,6 +124,7 @@ private:
     Frustum mViewFrustum;
     SubmeshOctree mSubmeshOctree;
     std::vector<uint32_t> mVisibleSubmeshIndices;
+    std::array<std::vector<uint32_t>, CameraConstants::CascadeCount> mVisibleShadowSubmeshIndices;
     OctreeTraversalStats mOctreeTraversalStats;
     bool mSpatialCullingEnabled = true;
     std::vector<Vertex> mSceneVertices;

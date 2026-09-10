@@ -534,6 +534,25 @@ void DirectXApp::BuildVisibleSubmeshList()
     std::sort(mVisibleSubmeshIndices.begin(), mVisibleSubmeshIndices.end());
 }
 
+void DirectXApp::BuildVisibleShadowSubmeshLists()
+{
+    for (UINT cascade = 0; cascade < CameraConstants::CascadeCount; ++cascade)
+    {
+        auto& visible = mVisibleShadowSubmeshIndices[cascade];
+        if (mSpatialCullingEnabled)
+        {
+            const XMMATRIX lightViewProj = XMMatrixTranspose(XMLoadFloat4x4(&mCameraConstants.mCascadeViewProj[cascade]));
+            OctreeTraversalStats ignoredStats;
+            mSubmeshOctree.GatherVisible(Frustum::FromViewProjection(lightViewProj), visible, ignoredStats);
+        }
+        else
+        {
+            visible.resize(mSubmeshes.size());
+            std::iota(visible.begin(), visible.end(), 0u);
+        }
+    }
+}
+
 void DirectXApp::UpdateCascadeConstants(const XMMATRIX& viewProj, const XMFLOAT3& lightDirection)
 {
     constexpr float cameraNear = 0.1f, cameraFar = 1000.0f, shadowDistance = 150.0f, splitLambda = 0.85f;
@@ -803,17 +822,15 @@ void DirectXApp::BuildRandomCubes(UINT count)
 }
 
 void DirectXApp::Shutdown() {
-    FlushCommandQueue();
-
-    // Освобождаем PSO
-    mPSO.Reset();
-    mRootSignature.Reset();
-
     if (mRenderingSystem)
     {
         mRenderingSystem->Shutdown();
         mRenderingSystem.reset();
     }
+
+    // Освобождаем PSO
+    mPSO.Reset();
+    mRootSignature.Reset();
 
 
     // Освобождаем constant buffers
@@ -1578,6 +1595,7 @@ void DirectXApp::Update(const Timer& gt)
         [](const Light& light) { return light.Type == LIGHT_DIRECTIONAL; });
     if (directional != mLights.end())
         UpdateCascadeConstants(viewProj, directional->Direction);
+    BuildVisibleShadowSubmeshLists();
     mCameraCB->CopyData(0, mCameraConstants);
 
     if (mPendingLightProjectileSpawn)
@@ -1802,6 +1820,7 @@ void DirectXApp::Draw(const Timer& gt)
 {
     mRenderingSystem->ShadowPass(
         mSubmeshes,
+        mVisibleShadowSubmeshIndices,
         mVertexBufferGPU.Get(),
         mIndexBufferGPU.Get(),
         mVertexBufferView,
@@ -1838,8 +1857,6 @@ void DirectXApp::Draw(const Timer& gt)
         mRenderingSystem->GetLightingCB(),
         mCameraCB.get(),
         mRenderingSystem->GetGBuffer());
-
-    FlushCommandQueue(); // ОДИН РАЗ В КОНЦЕ!
 
 }
 
