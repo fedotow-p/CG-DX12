@@ -53,10 +53,196 @@ bool RenderingSystem::Initialize(UINT width, UINT height)
     if (!CreateGBuffer(width, height))
         return false;
 
+    if (!CreateShadowResources())
+        return false;
+
     if (!CreateLightingResources())
         return false;
 
     return true;
+}
+
+bool RenderingSystem::CreateShadowResources()
+{
+    mShadowMap = std::make_unique<ShadowMap>(mDevice, SHADOW_MAP_SIZE, CASCADE_COUNT);
+
+    D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
+    dsvHeapDesc.NumDescriptors = CASCADE_COUNT;
+    dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    ThrowIfFailed(mDevice->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mShadowDsvHeap)));
+
+    mShadowMap->CreateDsvs(mDevice, mShadowDsvHeap.Get(), mDsvDescriptorSize, 0);
+
+    // ============= SHADOW ROOT SIGNATURE =============
+    D3D12_ROOT_PARAMETER shadowRootParams[1] = {};
+    shadowRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    shadowRootParams[0].Descriptor.ShaderRegister = 0;
+    shadowRootParams[0].Descriptor.RegisterSpace = 0;
+    shadowRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC shadowRootSigDesc = {};
+    shadowRootSigDesc.NumParameters = 1;
+    shadowRootSigDesc.pParameters = shadowRootParams;
+    shadowRootSigDesc.NumStaticSamplers = 0;
+    shadowRootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> serializedShadowRootSig;
+    ComPtr<ID3DBlob> shadowErrorBlob;
+    HRESULT hr = D3D12SerializeRootSignature(&shadowRootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+                                              &serializedShadowRootSig, &shadowErrorBlob);
+    if (FAILED(hr))
+    {
+        if (shadowErrorBlob)
+            OutputDebugStringA((char*)shadowErrorBlob->GetBufferPointer());
+        OutputDebugStringA("Failed to serialize shadow root signature\n");
+        return false;
+    }
+
+    hr = mDevice->CreateRootSignature(0, serializedShadowRootSig->GetBufferPointer(),
+                                      serializedShadowRootSig->GetBufferSize(),
+                                      IID_PPV_ARGS(&mShadowRootSignature));
+    if (FAILED(hr))
+    {
+        OutputDebugStringA("Failed to create shadow root signature\n");
+        return false;
+    }
+
+    // ============= SHADOW PSO =============
+    auto vsShadow = d3dUtil::CompileShader(
+        L"../src/shadowDepth.hlsl",
+        nullptr,
+        "VS",
+        "vs_5_0");
+
+    if (!vsShadow)
+    {
+        OutputDebugStringA("Failed to compile shadow depth VS\n");
+        return false;
+    }
+
+    std::vector<D3D12_INPUT_ELEMENT_DESC> shadowInputLayout =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowPsoDesc = {};
+    shadowPsoDesc.VS = { vsShadow->GetBufferPointer(), vsShadow->GetBufferSize() };
+    shadowPsoDesc.pRootSignature = mShadowRootSignature.Get();
+    shadowPsoDesc.InputLayout = { shadowInputLayout.data(), (UINT)shadowInputLayout.size() };
+    shadowPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    shadowPsoDesc.NumRenderTargets = 0;
+    shadowPsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    shadowPsoDesc.SampleDesc.Count = 1;
+    shadowPsoDesc.SampleDesc.Quality = 0;
+    shadowPsoDesc.SampleMask = UINT_MAX;
+
+    shadowPsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    shadowPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    shadowPsoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    // Slope-scaled depth bias reduces shadow acne without introducing
+    // significant peter-panning across steeply-angled surfaces.
+    shadowPsoDesc.RasterizerState.DepthBias = 50000;
+    shadowPsoDesc.RasterizerState.DepthBiasClamp = 0.01f;
+    shadowPsoDesc.RasterizerState.SlopeScaledDepthBias = 2.0f;
+    shadowPsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    shadowPsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    shadowPsoDesc.BlendState.IndependentBlendEnable = FALSE;
+
+    shadowPsoDesc.DepthStencilState.DepthEnable = TRUE;
+    shadowPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    shadowPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    shadowPsoDesc.DepthStencilState.StencilEnable = FALSE;
+
+    hr = mDevice->CreateGraphicsPipelineState(&shadowPsoDesc, IID_PPV_ARGS(&mShadowPSO));
+    if (FAILED(hr))
+    {
+        OutputDebugStringA("Failed to create shadow PSO\n");
+        return false;
+    }
+
+    mShadowPassCB = std::make_unique<UploadBuffer<ShadowPassCB>>(mDevice, CASCADE_COUNT, true);
+    mShadowConstantsCB = std::make_unique<UploadBuffer<ShadowConstants>>(mDevice, 1, true);
+
+    return true;
+}
+
+void RenderingSystem::UpdateShadowCascades(
+    const XMFLOAT3& lightDir,
+    const XMMATRIX& cameraView,
+    float nearPlane,
+    float farPlane,
+    float aspectRatio,
+    float fovY)
+{
+    // lambda = 0.6 favors tighter, higher-resolution near cascades while
+    // still keeping the far cascade wide enough to cover the whole scene.
+    mShadowMap->CalculateCascadeSplits(nearPlane, farPlane, 0.6f);
+    mShadowMap->UpdateLightMatrices(lightDir, cameraView, nearPlane, aspectRatio, fovY);
+}
+
+void RenderingSystem::ShadowPass(
+    const std::vector<Submesh>& submeshes,
+    const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
+    const D3D12_INDEX_BUFFER_VIEW& indexBufferView)
+{
+    if (!mShadowMap) return;
+
+    mCommandAllocator->Reset();
+    mCommandList->Reset(mCommandAllocator, mShadowPSO.Get());
+
+    D3D12_RESOURCE_BARRIER toWrite = CD3DX12_RESOURCE_BARRIER::Transition(
+        mShadowMap->GetResource(),
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    mCommandList->ResourceBarrier(1, &toWrite);
+
+    D3D12_VIEWPORT viewport = mShadowMap->GetViewport();
+    D3D12_RECT scissorRect = mShadowMap->GetScissorRect();
+    mCommandList->RSSetViewports(1, &viewport);
+    mCommandList->RSSetScissorRects(1, &scissorRect);
+    mCommandList->SetGraphicsRootSignature(mShadowRootSignature.Get());
+
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    mCommandList->IASetVertexBuffers(0, 1, &vertexBufferView);
+    mCommandList->IASetIndexBuffer(&indexBufferView);
+
+    UINT elementSize = mShadowPassCB->GetElementSize();
+    D3D12_GPU_VIRTUAL_ADDRESS baseAddr = mShadowPassCB->Resource()->GetGPUVirtualAddress();
+
+    for (UINT cascade = 0; cascade < mShadowMap->GetCascadeCount(); ++cascade)
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv = mShadowMap->GetDsv(cascade);
+        mCommandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        mCommandList->OMSetRenderTargets(0, nullptr, false, &dsv);
+
+        ShadowPassCB cb;
+        XMStoreFloat4x4(&cb.mLightViewProj, XMMatrixTranspose(mShadowMap->GetLightViewProj(cascade)));
+        mShadowPassCB->CopyData(cascade, cb);
+        mCommandList->SetGraphicsRootConstantBufferView(0, baseAddr + cascade * elementSize);
+
+        for (const Submesh& sm : submeshes)
+        {
+            mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
+        }
+    }
+
+    D3D12_RESOURCE_BARRIER toRead = CD3DX12_RESOURCE_BARRIER::Transition(
+        mShadowMap->GetResource(),
+        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    mCommandList->ResourceBarrier(1, &toRead);
+
+    mCommandList->Close();
+
+    ID3D12CommandList* cmdLists[] = { mCommandList };
+    mCommandQueue->ExecuteCommandLists(1, cmdLists);
 }
 
 bool RenderingSystem::CreateGBuffer(UINT width, UINT height)
@@ -96,35 +282,20 @@ bool RenderingSystem::CreateLightingResources()
 
 
     // ============= ROOT SIGNATURE =============
-    D3D12_DESCRIPTOR_RANGE srvRanges[3];
+    // Single contiguous SRV table: t0 Albedo, t1 Normal, t2 Depth, t3 Shadow cascade array.
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 4;
+    srvRange.BaseShaderRegister = 0;
+    srvRange.RegisterSpace = 0;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    // SRV для Albedo (t0)
-    srvRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRanges[0].NumDescriptors = 1;
-    srvRanges[0].BaseShaderRegister = 0;
-    srvRanges[0].RegisterSpace = 0;
-    srvRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_ROOT_PARAMETER rootParams[4] = {};
 
-    // SRV для Normal (t1)
-    srvRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRanges[1].NumDescriptors = 1;
-    srvRanges[1].BaseShaderRegister = 1;
-    srvRanges[1].RegisterSpace = 0;
-    srvRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // SRV для Depth (t2)
-    srvRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRanges[2].NumDescriptors = 1;
-    srvRanges[2].BaseShaderRegister = 2;
-    srvRanges[2].RegisterSpace = 0;
-    srvRanges[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER rootParams[3] = {};
-
-    // Root Parameter 0: Descriptor table для G-buffer SRVs
+    // Root Parameter 0: Descriptor table для G-buffer SRVs + shadow map
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rootParams[0].DescriptorTable.NumDescriptorRanges = 3;
-    rootParams[0].DescriptorTable.pDescriptorRanges = srvRanges;
+    rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[0].DescriptorTable.pDescriptorRanges = &srvRange;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     // Root Parameter 1: CBV для параметров света (b0)
@@ -139,27 +310,50 @@ bool RenderingSystem::CreateLightingResources()
     rootParams[2].Descriptor.RegisterSpace = 0;
     rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // Static Sampler
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;  // Изменено с WRAP на CLAMP для G-buffer
-    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MipLODBias = 0;
-    sampler.MaxAnisotropy = 1;
-    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler.MinLOD = 0;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;
-    sampler.RegisterSpace = 0;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // Root Parameter 3: CBV для параметров каскадных теней (b2)
+    rootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[3].Descriptor.ShaderRegister = 2;
+    rootParams[3].Descriptor.RegisterSpace = 0;
+    rootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+
+    // s0: обычный линейный sampler для G-buffer
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].MipLODBias = 0;
+    samplers[0].MaxAnisotropy = 1;
+    samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    samplers[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    samplers[0].MinLOD = 0;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;
+    samplers[0].RegisterSpace = 0;
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s1: comparison sampler used for hardware Percentage-Closer Filtering
+    // against the shadow map (SampleCmp does the depth comparison per-tap).
+    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].MipLODBias = 0;
+    samplers[1].MaxAnisotropy = 1;
+    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE; // outside cascade -> unshadowed
+    samplers[1].MinLOD = 0;
+    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[1].ShaderRegister = 1;
+    samplers[1].RegisterSpace = 0;
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 3;
+    rootSigDesc.NumParameters = 4;
     rootSigDesc.pParameters = rootParams;
-    rootSigDesc.NumStaticSamplers = 1;
-    rootSigDesc.pStaticSamplers = &sampler;
+    rootSigDesc.NumStaticSamplers = 2;
+    rootSigDesc.pStaticSamplers = samplers;
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> serializedRootSig;
@@ -263,6 +457,29 @@ bool RenderingSystem::CreateLightingResources()
         mDevice,
         10,  // Максимум источников
         true);
+
+    // Combined shader-visible SRV heap: G-buffer textures (t0-t2) followed
+    // by the shadow cascade array (t3), matching the root signature table.
+    D3D12_DESCRIPTOR_HEAP_DESC lightingSrvHeapDesc = {};
+    lightingSrvHeapDesc.NumDescriptors = GBuffer::GBUFFER_COUNT + 1;
+    lightingSrvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    lightingSrvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ThrowIfFailed(mDevice->CreateDescriptorHeap(&lightingSrvHeapDesc, IID_PPV_ARGS(&mLightingSrvHeap)));
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE lightingSrvHandle(mLightingSrvHeap->GetCPUDescriptorHandleForHeapStart());
+    for (int i = 0; i < GBuffer::GBUFFER_COUNT; ++i)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = (i == GBuffer::GBUFFER_ALBEDO) ? DXGI_FORMAT_R8G8B8A8_UNORM :
+                          (i == GBuffer::GBUFFER_NORMAL) ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R32_FLOAT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+        mDevice->CreateShaderResourceView(mGBuffer->GetTexture((GBuffer::GBUFFER_TEXTURE_TYPE)i), &srvDesc, lightingSrvHandle);
+        lightingSrvHandle.Offset(mCbvSrvUavDescriptorSize);
+    }
+
+    mShadowMap->CreateSrv(mDevice, lightingSrvHandle);
 
     return true;
 }
@@ -445,21 +662,30 @@ void RenderingSystem::LightingPass(
     mCommandList->OMSetRenderTargets(1, &rtvHandle, true, nullptr);
 
     mCommandList->SetGraphicsRootSignature(lightingRootSignature);
-    ID3D12DescriptorHeap* heaps[] = { gBuffer->mSrvHeap.Get() };
+    ID3D12DescriptorHeap* heaps[] = { mLightingSrvHeap.Get() };
     mCommandList->SetDescriptorHeaps(1, heaps);
-    mCommandList->SetGraphicsRootDescriptorTable(0, gBuffer->mSrvHeap->GetGPUDescriptorHandleForHeapStart());
-
-    D3D12_GPU_VIRTUAL_ADDRESS cameraAddr = cameraCB->Resource()->GetGPUVirtualAddress();
-    mCommandList->SetGraphicsRootConstantBufferView(2, cameraAddr);
-
-    D3D12_GPU_VIRTUAL_ADDRESS baseAddr = lightingCB->Resource()->GetGPUVirtualAddress();
-    UINT elementSize = lightingCB->GetElementSize();
+    mCommandList->SetGraphicsRootDescriptorTable(0, mLightingSrvHeap->GetGPUDescriptorHandleForHeapStart());
 
     if (cameraCB)
     {
         D3D12_GPU_VIRTUAL_ADDRESS cameraAddr = cameraCB->Resource()->GetGPUVirtualAddress();
         mCommandList->SetGraphicsRootConstantBufferView(2, cameraAddr);
     }
+
+    // Directional light drives the cascaded shadow map; find it to build ShadowConstants.
+    XMFLOAT3 shadowLightDir(0.0f, -1.0f, 0.0f);
+    for (const Light& light : lights)
+    {
+        if (light.Type == LIGHT_DIRECTIONAL)
+        {
+            shadowLightDir = light.Direction;
+            break;
+        }
+    }
+
+    ShadowConstants shadowConstants = mShadowMap->GetShadowConstants(shadowLightDir);
+    mShadowConstantsCB->CopyData(0, shadowConstants);
+    mCommandList->SetGraphicsRootConstantBufferView(3, mShadowConstantsCB->Resource()->GetGPUVirtualAddress());
 
     mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     mCommandList->IASetVertexBuffers(0, 0, nullptr);  // Нет вершинных буферов
@@ -513,6 +739,14 @@ void RenderingSystem::Shutdown()
     mLightingPSO.Reset();
     mLightingRootSignature.Reset();
     mLightingCB.reset();
+    mLightingSrvHeap.Reset();
+
+    mShadowPSO.Reset();
+    mShadowRootSignature.Reset();
+    mShadowDsvHeap.Reset();
+    mShadowPassCB.reset();
+    mShadowConstantsCB.reset();
+    mShadowMap.reset();
 }
 
 void RenderingSystem::FlushCommandQueue()

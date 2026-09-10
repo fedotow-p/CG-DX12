@@ -13,8 +13,14 @@
 #include "Material.h"
 #include "GBuffer.h"
 #include "CameraConstants.h"
+#include "ShadowMap.h"
 
 using Microsoft::WRL::ComPtr;
+
+struct ShadowPassCB
+{
+    DirectX::XMFLOAT4X4 mLightViewProj;
+};
 
 struct GeometryPassStats
 {
@@ -46,6 +52,14 @@ public:
     ~RenderingSystem();
 
     bool Initialize(UINT width, UINT height);
+
+    // Renders scene depth from the light's point of view into each cascade
+    // slice of the shadow map. Call UpdateShadowCascades first, then this,
+    // before GeometryPass each frame.
+    void ShadowPass(
+        const std::vector<Submesh>& submeshes,
+        const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
+        const D3D12_INDEX_BUFFER_VIEW& indexBufferView);
 
     void GeometryPass(
         ID3D12PipelineState* pso,
@@ -80,6 +94,15 @@ public:
         UploadBuffer<CameraConstants>* cameraCB,
         GBuffer* gBuffer);
 
+    // Recomputes cascade splits/matrices for the current frame's directional light and camera.
+    void UpdateShadowCascades(
+        const DirectX::XMFLOAT3& lightDir,
+        const DirectX::XMMATRIX& cameraView,
+        float nearPlane,
+        float farPlane,
+        float aspectRatio,
+        float fovY);
+
     void Shutdown();
     void FlushCommandQueue();
 
@@ -88,12 +111,14 @@ public:
     ID3D12PipelineState* GetLightingPSO() { return mLightingPSO.Get(); }
     ID3D12RootSignature* GetLightingRootSignature() { return mLightingRootSignature.Get(); }
     const GeometryPassStats& GetGeometryPassStats() const { return mGeometryPassStats; }
+    ShadowMap* GetShadowMap() { return mShadowMap.get(); }
 
 private:
     std::vector<Light> mLights;
     GeometryPassStats mGeometryPassStats;
     bool CreateGBuffer(UINT width, UINT height);
     bool CreateLightingResources();
+    bool CreateShadowResources();
 
     // Устройство и очередь
     ID3D12Device* mDevice;
@@ -111,6 +136,16 @@ private:
     ComPtr<ID3D12PipelineState> mLightingPSO;
     ComPtr<ID3D12RootSignature> mLightingRootSignature;
     std::unique_ptr<UploadBuffer<LightConstants>> mLightingCB;
+    // Combined SRV heap for the lighting pass: G-buffer (albedo/normal/depth) + shadow cascade array.
+    ComPtr<ID3D12DescriptorHeap> mLightingSrvHeap;
+
+    // Ресурсы теней (Cascaded Shadow Maps)
+    std::unique_ptr<ShadowMap> mShadowMap;
+    ComPtr<ID3D12PipelineState> mShadowPSO;
+    ComPtr<ID3D12RootSignature> mShadowRootSignature;
+    ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap;
+    std::unique_ptr<UploadBuffer<ShadowPassCB>> mShadowPassCB;
+    std::unique_ptr<UploadBuffer<ShadowConstants>> mShadowConstantsCB;
 
     // Размеры дескрипторов
     UINT mRtvDescriptorSize = 0;

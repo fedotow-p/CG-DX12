@@ -1252,7 +1252,7 @@ bool DirectXApp::Initialize() {
 
         mMaterials.push_back(cubeMat);
 
-        BuildRandomCubes(200000);
+        BuildRandomCubes(5000);
         RebuildSpatialIndex();
         UploadSceneGeometryBuffers();
     }
@@ -1741,6 +1741,29 @@ bool DirectXApp::RayIntersectsTriangle(
 
 void DirectXApp::Draw(const Timer& gt)
 {
+    XMFLOAT3 shadowLightDir(0.8f, -1.0f, 0.4f);
+    for (const Light& light : mLights)
+    {
+        if (light.Type == LIGHT_DIRECTIONAL)
+        {
+            shadowLightDir = light.Direction;
+            break;
+        }
+    }
+
+    mRenderingSystem->UpdateShadowCascades(
+        shadowLightDir,
+        XMLoadFloat4x4(&mView),
+        0.1f,
+        1000.0f,
+        static_cast<float>(mClientWidth) / static_cast<float>(mClientHeight),
+        XM_PIDIV4);
+
+    mRenderingSystem->ShadowPass(
+        mSubmeshes,
+        mVertexBufferView,
+        mIndexBufferView);
+
     mRenderingSystem->GeometryPass(
         mPSO.Get(),
         mRootSignature.Get(),
@@ -1773,7 +1796,7 @@ void DirectXApp::Draw(const Timer& gt)
         mCameraCB.get(),
         mRenderingSystem->GetGBuffer());
 
-    FlushCommandQueue(); // ОДИН РАЗ В КОНЦЕ!
+    FlushCommandQueue();
 
 }
 

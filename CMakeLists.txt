@@ -38,4 +38,6 @@ add_executable(CG_DX12
         h/RenderingSystem.h
         src/Gbuffer.cpp
         src/RenderingSystem.cpp
+        h/ShadowMap.h
+        src/ShadowMap.cpp
 )

@@ -1,7 +1,9 @@
 Texture2D gAlbedoMap : register(t0);
 Texture2D gNormalMap : register(t1);
 Texture2D gDepthMap : register(t2);
+Texture2DArray gShadowMap : register(t3);
 SamplerState gSampler : register(s0);
+SamplerComparisonState gShadowSampler : register(s1);
 
 cbuffer cbLighting : register(b0)
 {
@@ -26,6 +28,16 @@ cbuffer cbCamera : register(b1)
     float2 padding2;
 };
 
+static const int CASCADE_COUNT = 4;
+
+cbuffer cbShadow : register(b2)
+{
+    float4x4 gLightViewProj[CASCADE_COUNT];
+    float4 gCascadeSplits;   // view-space far distance of each cascade
+    float4 gShadowMapSize;   // x = size, y = 1/size
+    float4 gLightDirShadow;  // xyz = light direction (world space)
+};
+
 
 // Константы для типов света
 static const int LIGHT_AMBIENT = 0;
@@ -43,6 +55,67 @@ struct PSInput
     float4 PosH : SV_POSITION;
     float2 TexC : TEXCOORD;
 };
+
+int SelectCascade(float viewDepth)
+{
+    for (int i = 0; i < CASCADE_COUNT - 1; ++i)
+    {
+        if (viewDepth < gCascadeSplits[i])
+            return i;
+    }
+    return CASCADE_COUNT - 1;
+}
+
+// 3x3 Percentage-Closer Filtering: averages hardware depth-comparison taps
+// around the shadow texel to soften cascade edges and reduce aliasing.
+float SampleShadowPCF(int cascade, float3 shadowCoord)
+{
+    float shadow = 0.0f;
+    const float texelSize = gShadowMapSize.y;
+
+    [unroll]
+    for (int x = -1; x <= 1; ++x)
+    {
+        [unroll]
+        for (int y = -1; y <= 1; ++y)
+        {
+            float2 offset = float2(x, y) * texelSize;
+            shadow += gShadowMap.SampleCmpLevelZero(
+                gShadowSampler,
+                float3(shadowCoord.xy + offset, cascade),
+                shadowCoord.z);
+        }
+    }
+
+    return shadow / 9.0f;
+}
+
+float CalculateShadowFactor(float3 worldPos, float viewDepth, float3 normal)
+{
+    int cascade = SelectCascade(viewDepth);
+
+    float4 shadowClip = mul(float4(worldPos, 1.0f), gLightViewProj[cascade]);
+    float3 shadowNdc = shadowClip.xyz / shadowClip.w;
+
+    float3 shadowCoord;
+    shadowCoord.x = shadowNdc.x * 0.5f + 0.5f;
+    shadowCoord.y = 1.0f - (shadowNdc.y * 0.5f + 0.5f);
+    shadowCoord.z = shadowNdc.z;
+
+    if (shadowCoord.x < 0.0f || shadowCoord.x > 1.0f ||
+        shadowCoord.y < 0.0f || shadowCoord.y > 1.0f ||
+        shadowCoord.z < 0.0f || shadowCoord.z > 1.0f)
+    {
+        return 1.0f;
+    }
+
+    // Slope-scaled bias reduces shadow acne on surfaces facing away from the light.
+    float nDotL = saturate(dot(normal, -normalize(gLightDirShadow.xyz)));
+    float bias = lerp(0.0025f, 0.0004f, nDotL);
+    shadowCoord.z -= bias;
+
+    return SampleShadowPCF(cascade, shadowCoord);
+}
 
 float3 ReconstructWorldPos(float2 texCoord, float depth, float4x4 invViewProj)
 {
@@ -98,7 +171,11 @@ float4 PS(PSInput pin) : SV_Target
     {
         float3 lightDir = normalize(-gLightDir);
         float diff = max(dot(normal, lightDir), 0.0f);
-        result = diff * gLightColor * gLightIntensity * albedo.rgb;
+
+        float viewDepth = length(worldPos - mCameraPos);
+        float shadow = CalculateShadowFactor(worldPos, viewDepth, normal);
+
+        result = diff * gLightColor * gLightIntensity * albedo.rgb * shadow;
     }
     if (gLightType == LIGHT_POINT)
     {
