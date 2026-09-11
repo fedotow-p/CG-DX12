@@ -1324,7 +1324,7 @@ bool DirectXApp::Initialize() {
 
         mMaterials.push_back(cubeMat);
 
-        BuildRandomCubes(200000);
+        BuildRandomCubes(10000);
         RebuildSpatialIndex();
         UploadSceneGeometryBuffers();
     }

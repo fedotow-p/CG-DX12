@@ -39,4 +39,5 @@ add_executable(CG_DX12
         src/Gbuffer.cpp
         src/RenderingSystem.cpp
         src/shadow.hlsl
+        src/postprocess.hlsl
 )

@@ -104,6 +104,7 @@ private:
     std::vector<Light> mLights;
     GeometryPassStats mGeometryPassStats;
     bool CreateGBuffer(UINT width, UINT height);
+    bool CreatePostProcessResources();
     bool CreateLightingResources();
 
     // Устройство и очередь
@@ -126,6 +127,12 @@ private:
     ComPtr<ID3D12Resource> mShadowMap;
     ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap;
     ComPtr<ID3D12DescriptorHeap> mLightingSrvHeap;
+    // Промежуточный результат освещения: его читает post-process pass.
+    ComPtr<ID3D12Resource> mSceneColor;
+    ComPtr<ID3D12DescriptorHeap> mPostProcessRtvHeap;
+    ComPtr<ID3D12DescriptorHeap> mPostProcessSrvHeap;
+    ComPtr<ID3D12PipelineState> mPostProcessPSO;
+    ComPtr<ID3D12RootSignature> mPostProcessRootSignature;
     ComPtr<ID3D12PipelineState> mShadowPSO;
     ComPtr<ID3D12RootSignature> mShadowRootSignature;
     ComPtr<ID3D12CommandAllocator> mShadowCommandAllocator;
