@@ -49,6 +49,23 @@ struct PSInput
     float2 TexC : TEXCOORD;
 };
 
+// Минимальный набор данных, получаемый пиксельным шейдером из G-buffer.
+struct GBufferData
+{
+    float4 Albedo;
+    float3 Normal;
+    float Depth;
+};
+
+GBufferData ReadGBuffer(float2 texCoord)
+{
+    GBufferData data;
+    data.Albedo = gAlbedoMap.Sample(gSampler, texCoord);
+    data.Normal = gNormalMap.Sample(gSampler, texCoord).xyz;
+    data.Depth = gDepthMap.Sample(gSampler, texCoord).r;
+    return data;
+}
+
 float3 ReconstructWorldPos(float2 texCoord, float depth, float4x4 invViewProj)
 {
     // Конвертируем texCoord в NDC [-1, 1]
@@ -103,13 +120,14 @@ float GetShadowFactor(float3 worldPos)
 
 float4 PS(PSInput pin) : SV_Target
 {
-    float4 albedo = gAlbedoMap.Sample(gSampler, pin.TexC);
-    float4 normalData = gNormalMap.Sample(gSampler, pin.TexC);
-    float depth = gDepthMap.Sample(gSampler, pin.TexC).r;  // Только красный канал
+    // Заготовка PS: считываем входные текстуры G-buffer по экранным UV.
+    GBufferData gbuffer = ReadGBuffer(pin.TexC);
+    float4 albedo = gbuffer.Albedo;
+    float3 normal = normalize(gbuffer.Normal);
+    float depth = gbuffer.Depth;
 
     // Восстанавливаем мировую позицию
     float3 worldPos = ReconstructWorldPos(pin.TexC, depth, mInvViewProj);
-    float3 normal = normalize(normalData.xyz);
 
     float3 viewDir = normalize(mCameraPos - worldPos);
     // Проверка на фон (по глубине)
