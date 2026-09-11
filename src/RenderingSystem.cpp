@@ -620,7 +620,7 @@ void RenderingSystem::LightingPass(
         mCommandList->SetGraphicsRootConstantBufferView(2, cameraAddr);
     }
 
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     mCommandList->IASetVertexBuffers(0, 0, nullptr);  // Нет вершинных буферов
     mCommandList->IASetIndexBuffer(nullptr);
 
@@ -639,8 +639,8 @@ void RenderingSystem::LightingPass(
             D3D12_GPU_VIRTUAL_ADDRESS cbAddr = baseAddr + i * elementSize;
             mCommandList->SetGraphicsRootConstantBufferView(1, cbAddr);
 
-            // Рисуем полноэкранный треугольник (3 вершины)
-            mCommandList->DrawInstanced(3, 1, 0, 0);
+            // Рисуем полноэкранный quad, который VS генерирует по SV_VertexID.
+            mCommandList->DrawInstanced(4, 1, 0, 0);
         }
     }
 

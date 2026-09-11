@@ -66,7 +66,11 @@ float3 ReconstructWorldPos(float2 texCoord, float depth, float4x4 invViewProj)
 PSInput VS(VSInput vin)
 {
     PSInput vout;
-    float2 texCoord = float2((vin.vertexId << 1) & 2, vin.vertexId & 2);
+
+    // ID вершин для triangle strip: 0, 1, 2, 3.
+    // Формируем UV (0,0), (1,0), (0,1), (1,1) прямо из ID,
+    // поэтому входной вершинный буфер не требуется.
+    float2 texCoord = float2(vin.vertexId & 1, vin.vertexId >> 1);
     vout.TexC = texCoord;
     vout.PosH = float4(texCoord.x * 2.0f - 1.0f, -(texCoord.y * 2.0f - 1.0f), 0.0f, 1.0f);
     return vout;
