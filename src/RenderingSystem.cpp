@@ -598,8 +598,10 @@ void RenderingSystem::GeometryPass(
         srvHandle3.ptr += (1 + mat->HeightSrvHeapIndex) * cbvSrvDescriptorSize;
         mCommandList->SetGraphicsRootDescriptorTable(3, srvHandle3);
 
-        const float isFlag = IsAnimatedFlagMaterial(*mat) ? 1.0f : 0.0f;
-        mCommandList->SetGraphicsRoot32BitConstant(4, *reinterpret_cast<const UINT*>(&isFlag), 0);
+        const float materialMode = IsAnimatedFlagMaterial(*mat)
+            ? 1.0f
+            : (mat->EnableTessellation ? 2.0f : 0.0f);
+        mCommandList->SetGraphicsRoot32BitConstant(4, *reinterpret_cast<const UINT*>(&materialMode), 0);
 
         mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
         mGeometryPassStats.DrawnSubmeshes++;

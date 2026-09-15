@@ -14,7 +14,8 @@ cbuffer cbPerObject : register(b0)
     float4 mTessellationParams;
 };
 
-float gIsFlag : register(b1);
+// 0 — regular material, 1 — animated flag, 2 — terrain/earth.
+float gMaterialMode : register(b1);
 
 struct VSInput
 {
@@ -62,7 +63,7 @@ VSOutput VS(VSInput vin)
 
 float3 ApplyFlagAnimation(float3 position, float2 texcoord)
 {
-    if (gIsFlag <= 0.5f)
+    if (abs(gMaterialMode - 1.0f) > 0.25f)
     {
         return position;
     }
@@ -77,6 +78,45 @@ float3 ApplyFlagAnimation(float3 position, float2 texcoord)
     modifiedPos.z += (primaryWave * 0.08f + secondaryWave * 0.025f) * anchor2;
     modifiedPos.y += sin(position.x * 3.3f - wavePhase * 2.6f + texcoord.y * 2.1f) * 0.03f * anchor;
     return modifiedPos;
+}
+
+// Smooth value noise in object space.  Using object coordinates keeps the
+// terrain relief fixed while the camera and UV transform change.
+float Hash21(float2 p)
+{
+    p = frac(p * float2(123.34f, 456.21f));
+    p += dot(p, p + 45.32f);
+    return frac(p.x * p.y);
+}
+
+float ValueNoise(float2 p)
+{
+    float2 cell = floor(p);
+    float2 local = frac(p);
+    float2 fade = local * local * (3.0f - 2.0f * local);
+
+    float a = Hash21(cell);
+    float b = Hash21(cell + float2(1.0f, 0.0f));
+    float c = Hash21(cell + float2(0.0f, 1.0f));
+    float d = Hash21(cell + 1.0f);
+    return lerp(lerp(a, b, fade.x), lerp(c, d, fade.x), fade.y);
+}
+
+float TerrainNoise(float3 position)
+{
+    float noise = 0.0f;
+    float amplitude = 0.5f;
+    float frequency = 2.5f;
+
+    [unroll]
+    for (uint octave = 0; octave < 3; ++octave)
+    {
+        noise += ValueNoise(position.xz * frequency) * amplitude;
+        frequency *= 2.0f;
+        amplitude *= 0.5f;
+    }
+
+    return noise / 0.875f * 2.0f - 1.0f;
 }
 
 HSConstants CalcHSPatchConstants(InputPatch<VSOutput, 3> patch, uint patchId : SV_PrimitiveID)
@@ -143,6 +183,12 @@ DSOutput DS(HSConstants hsConstants, const OutputPatch<HSControlPoint, 3> patch,
     float heightSample = gHeightMap.SampleLevel(gSampler, texcoord, 0).r;
     float displacementStrength = 0.12f;
     posL += normalL * ((heightSample - 0.5f) * displacementStrength);
+
+    if (gMaterialMode > 1.5f)
+    {
+        const float noiseDisplacementStrength = 0.225f;
+        posL += normalL * (TerrainNoise(posL) * noiseDisplacementStrength);
+    }
 
     float4 worldPos = mul(float4(posL, 1.0f), mWorld);
     output.PosH = mul(float4(posL, 1.0f), mWorldViewProj);

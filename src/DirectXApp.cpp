@@ -254,7 +254,7 @@ void DirectXApp::BuildRootSignature()
     rootParameters[3].DescriptorTable.pDescriptorRanges = &srvRange3;
     rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Slot 4 → isFlag (b1)
+    // Slot 4 → material mode (b1): regular, flag, or terrain.
     rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     rootParameters[4].Constants.Num32BitValues = 1;
     rootParameters[4].Constants.ShaderRegister = 1;
