@@ -78,6 +78,17 @@ bool GBuffer::CreateTextures(ID3D12Device* device)
         IID_PPV_ARGS(&mTextures[GBUFFER_NORMAL])
     ));
 
+    // Material texture: metallic/roughness.
+    texDesc.Format = mMaterialFormat;
+    D3D12_CLEAR_VALUE clearValueMaterial = {};
+    clearValueMaterial.Format = mMaterialFormat;
+    clearValueMaterial.Color[0] = 0.0f;
+    clearValueMaterial.Color[1] = 0.65f;
+    ThrowIfFailed(device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearValueMaterial,
+        IID_PPV_ARGS(&mTextures[GBUFFER_MATERIAL])));
+
     // Depth texture (просто R32_FLOAT)
     texDesc.Format = mDepthFormat;
     texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
@@ -118,7 +129,8 @@ bool GBuffer::CreateRTVs(ID3D12Device* device)
     {
         D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
         rtvDesc.Format = (i == GBUFFER_ALBEDO) ? mAlbedoFormat :
-                         (i == GBUFFER_NORMAL) ? mNormalFormat :mDepthFormat;
+                         (i == GBUFFER_NORMAL) ? mNormalFormat :
+                         (i == GBUFFER_MATERIAL) ? mMaterialFormat : mDepthFormat;
         rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 
         device->CreateRenderTargetView(mTextures[i].Get(), &rtvDesc, rtvHandle);
@@ -150,7 +162,8 @@ bool GBuffer::CreateSRVs(ID3D12Device* device)
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.Format = (i == GBUFFER_ALBEDO) ? mAlbedoFormat :
-                         (i == GBUFFER_NORMAL) ? mNormalFormat : mDepthFormat;
+                         (i == GBUFFER_NORMAL) ? mNormalFormat :
+                         (i == GBUFFER_MATERIAL) ? mMaterialFormat : mDepthFormat;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MipLevels = 1;
 
@@ -183,10 +196,12 @@ void GBuffer::ClearRenderTargets(ID3D12GraphicsCommandList* cmdList,
 {
     float defaultClearAlbedo[] = { 0.0f, 0.0f, 0.0f, 1.0f };
     float defaultClearNormal[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    float defaultClearMaterial[] = { 0.0f, 0.65f, 0.0f, 0.0f };
     float defaultClearDepth[] = { 1.0f, 0.0f, 0.0f, 0.0f };   // глубина = 1.0
 
     cmdList->ClearRenderTargetView(GetRTV(GBUFFER_ALBEDO), clearColorAlbedo ? clearColorAlbedo : defaultClearAlbedo, 0, nullptr);
     cmdList->ClearRenderTargetView(GetRTV(GBUFFER_NORMAL), clearColorNormal ? clearColorNormal : defaultClearNormal, 0, nullptr);
+    cmdList->ClearRenderTargetView(GetRTV(GBUFFER_MATERIAL), defaultClearMaterial, 0, nullptr);
     cmdList->ClearRenderTargetView(GetRTV(GBUFFER_DEPTH),   clearColorDepth ? clearColorDepth : defaultClearDepth, 0, nullptr);
 }
 
@@ -197,6 +212,7 @@ void GBuffer::SetRenderTargets(ID3D12GraphicsCommandList* cmdList,
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[GBUFFER_COUNT] = {
         GetRTV(GBUFFER_ALBEDO),
         GetRTV(GBUFFER_NORMAL),
+        GetRTV(GBUFFER_MATERIAL),
         GetRTV(GBUFFER_DEPTH)
     };
 

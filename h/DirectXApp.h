@@ -133,6 +133,9 @@ private:
     void CreateTextureFromTGA(
         const std::string& path,
         Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
+    void CreateTextureFromWIC(
+        const std::string& path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
     void CreateTextureFromDDS(
         const std::string& path,
         Microsoft::WRL::ComPtr<ID3D12Resource>& texture,

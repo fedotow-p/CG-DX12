@@ -392,6 +392,7 @@ bool ParseFbxProperty(const std::vector<uint8_t>& data, size_t& offset, FbxPrope
             offset += length;
             return true;
         }
+        case 'b':
         case 'i':
         case 'l':
         case 'f':
@@ -404,6 +405,10 @@ bool ParseFbxProperty(const std::vector<uint8_t>& data, size_t& offset, FbxPrope
 
             switch (type)
             {
+                case 'b':
+                    outProperty.Value = ReadArrayData<uint8_t>(
+                        data, offset, arrayLength, encoding, compressedLength);
+                    return true;
                 case 'i':
                     outProperty.Value = ReadArrayData<int32_t>(
                         data, offset, arrayLength, encoding, compressedLength);

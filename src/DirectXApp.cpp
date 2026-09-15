@@ -20,10 +20,12 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <wincodec.h>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "windowscodecs.lib")
 
 using namespace DirectX;
 
@@ -229,7 +231,14 @@ void DirectXApp::BuildRootSignature()
     srvRange3.RegisterSpace = 0;
     srvRange3.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParameters[5];
+    D3D12_DESCRIPTOR_RANGE srvRange4 = {};
+    srvRange4.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange4.NumDescriptors = 1;
+    srvRange4.BaseShaderRegister = 3;
+    srvRange4.RegisterSpace = 0;
+    srvRange4.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER rootParameters[6] = {};
 
     // Slot 0 → CBV
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -255,12 +264,17 @@ void DirectXApp::BuildRootSignature()
     rootParameters[3].DescriptorTable.pDescriptorRanges = &srvRange3;
     rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Slot 4 → isFlag (b1)
-    rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParameters[4].Constants.Num32BitValues = 1;
-    rootParameters[4].Constants.ShaderRegister = 1;
-    rootParameters[4].Constants.RegisterSpace = 0;
+    rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[4].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[4].DescriptorTable.pDescriptorRanges = &srvRange4;
     rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // Slot 5 → isFlag (b1)
+    rootParameters[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[5].Constants.Num32BitValues = 1;
+    rootParameters[5].Constants.ShaderRegister = 1;
+    rootParameters[5].Constants.RegisterSpace = 0;
+    rootParameters[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Static Sampler (s0)
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -273,7 +287,7 @@ void DirectXApp::BuildRootSignature()
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 5;
+    rootSigDesc.NumParameters = 6;
     rootSigDesc.pParameters = rootParameters;
     rootSigDesc.NumStaticSamplers = 1;
     rootSigDesc.pStaticSamplers = &sampler;
@@ -376,10 +390,11 @@ void DirectXApp::BuildPSO()
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
 
     // 9. Render Targets
-    psoDesc.NumRenderTargets = 3;
+    psoDesc.NumRenderTargets = 4;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;      // Albedo
     psoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT; // Normal
-    psoDesc.RTVFormats[2] = DXGI_FORMAT_R32_FLOAT;
+    psoDesc.RTVFormats[2] = DXGI_FORMAT_R8G8_UNORM;          // Metallic / roughness
+    psoDesc.RTVFormats[3] = DXGI_FORMAT_R32_FLOAT;
 
     // 10. Формат Depth/Stencil
     psoDesc.DSVFormat = mDepthStencilFormat;
@@ -1174,7 +1189,7 @@ bool DirectXApp::Initialize() {
 
     //Геометрия и ресурсы
     BuildInputLayout();
-    const std::string scenePath = "../assets/Earth.fbx";
+    const std::string scenePath = "../assets/Cerberus_LP.FBX";
     std::vector<ParsedMaterial> parsed;
 
     const std::string loweredScenePath = [&scenePath]()
@@ -1236,9 +1251,18 @@ bool DirectXApp::Initialize() {
             mat.EnableTessellation = true;
         }
 
+        const bool isCerberusMaterial = loweredScenePath.find("cerberus") != std::string::npos;
+        if (isCerberusMaterial)
+        {
+            mat.DiffuseMap = "../assets/Cerberus_Textures/Cerberus_A.jpg";
+            mat.NormalMap = "../assets/Cerberus_Textures/Cerberus_N.jpg";
+            mat.MetallicRoughnessMap = "../assets/Cerberus_Textures/Cerberus_M.jpg";
+        }
+
         mat.DiffuseSrvHeapIndex = srvIndex++;
         mat.NormalSrvHeapIndex = srvIndex++;
         mat.HeightSrvHeapIndex = srvIndex++;
+        mat.MetallicRoughnessSrvHeapIndex = srvIndex++;
 
         if (!mat.DiffuseMap.empty())
         {
@@ -1247,10 +1271,22 @@ bool DirectXApp::Initialize() {
                 mat.DiffuseTexture,
                 mat.TextureFormat);
         }
+
         else
         {
             CreateColorTexture(p.Kd, mat.DiffuseTexture);
             mat.TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        }
+
+        if (!mat.MetallicRoughnessMap.empty())
+        {
+            CreateTextureFromFile(mat.MetallicRoughnessMap, mat.MetallicRoughnessTexture, mat.MetallicRoughnessFormat);
+        }
+        else
+        {
+            // Default dielectric material: metallic=0, roughness~0.65.
+            CreateColorTexture({ 0.0f, 0.65f, 0.0f }, mat.MetallicRoughnessTexture);
+            mat.MetallicRoughnessFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
 
         if (!mat.NormalMap.empty())
@@ -1294,6 +1330,10 @@ bool DirectXApp::Initialize() {
             1 + mat.HeightSrvHeapIndex,
             mat.HeightTexture.Get(),
             mat.HeightFormat);
+        CreateTextureSrv(
+            device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
+            1 + mat.MetallicRoughnessSrvHeapIndex,
+            mat.MetallicRoughnessTexture.Get(), mat.MetallicRoughnessFormat);
 
         mMaterials.push_back(mat);
     }
@@ -1305,6 +1345,7 @@ bool DirectXApp::Initialize() {
         cubeMat.DiffuseSrvHeapIndex = srvIndex++;
         cubeMat.NormalSrvHeapIndex = srvIndex++;
         cubeMat.HeightSrvHeapIndex = srvIndex++;
+        cubeMat.MetallicRoughnessSrvHeapIndex = srvIndex++;
 
         CreateColorTexture({ 0.85f, 0.25f, 0.2f }, cubeMat.DiffuseTexture);
         cubeMat.TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1314,6 +1355,8 @@ bool DirectXApp::Initialize() {
 
         CreateColorTexture({ 0.5f, 0.5f, 0.5f }, cubeMat.HeightTexture);
         cubeMat.HeightFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        CreateColorTexture({ 0.0f, 0.65f, 0.0f }, cubeMat.MetallicRoughnessTexture);
+        cubeMat.MetallicRoughnessFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 
         CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
             1 + cubeMat.DiffuseSrvHeapIndex, cubeMat.DiffuseTexture.Get(), cubeMat.TextureFormat);
@@ -1321,6 +1364,8 @@ bool DirectXApp::Initialize() {
             1 + cubeMat.NormalSrvHeapIndex, cubeMat.NormalTexture.Get(), cubeMat.NormalFormat);
         CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
             1 + cubeMat.HeightSrvHeapIndex, cubeMat.HeightTexture.Get(), cubeMat.HeightFormat);
+        CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
+            1 + cubeMat.MetallicRoughnessSrvHeapIndex, cubeMat.MetallicRoughnessTexture.Get(), cubeMat.MetallicRoughnessFormat);
 
         mMaterials.push_back(cubeMat);
 
@@ -2128,11 +2173,74 @@ void DirectXApp::CreateTextureFromFile(
     {
         CreateTextureFromDDS(resolvedPath.string(), texture, textureFormat);
     }
-    else
+    else if (loweredPath.size() >= 4 && loweredPath.substr(loweredPath.size() - 4) == ".tga")
     {
         CreateTextureFromTGA(resolvedPath.string(), texture);
         textureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
     }
+    else
+    {
+        CreateTextureFromWIC(resolvedPath.string(), texture);
+        textureFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
+void DirectXApp::CreateTextureFromWIC(const std::string& path, ComPtr<ID3D12Resource>& texture)
+{
+    const int wcharCount = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::wstring widePath(wcharCount, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, widePath.data(), wcharCount);
+    ComPtr<IWICImagingFactory> factory;
+    ComPtr<IWICBitmapDecoder> decoder;
+    ComPtr<IWICBitmapFrameDecode> frame;
+    ComPtr<IWICFormatConverter> converter;
+    ThrowIfFailed(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)));
+    ThrowIfFailed(factory->CreateDecoderFromFilename(widePath.c_str(), nullptr, GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad, &decoder));
+    ThrowIfFailed(decoder->GetFrame(0, &frame));
+    ThrowIfFailed(factory->CreateFormatConverter(&converter));
+    ThrowIfFailed(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA,
+        WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom));
+    UINT width = 0, height = 0;
+    ThrowIfFailed(converter->GetSize(&width, &height));
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
+    ThrowIfFailed(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data()));
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = width; desc.Height = height; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    D3D12_HEAP_PROPERTIES defaultHeap = {}; defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    ThrowIfFailed(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture)));
+    UINT64 uploadSize = 0;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &uploadSize);
+    D3D12_HEAP_PROPERTIES uploadHeap = {}; uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC uploadDesc = {};
+    uploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; uploadDesc.Width = uploadSize;
+    uploadDesc.Height = 1; uploadDesc.DepthOrArraySize = 1; uploadDesc.MipLevels = 1;
+    uploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR; uploadDesc.SampleDesc.Count = 1;
+    ComPtr<ID3D12Resource> upload;
+    ThrowIfFailed(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &uploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)));
+    uint8_t* mapped = nullptr;
+    ThrowIfFailed(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped)));
+    for (UINT row = 0; row < height; ++row)
+        memcpy(mapped + footprint.Offset + row * footprint.Footprint.RowPitch, pixels.data() + row * width * 4, width * 4);
+    upload->Unmap(0, nullptr);
+    D3D12_TEXTURE_COPY_LOCATION dst = { texture.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+    D3D12_TEXTURE_COPY_LOCATION src = { upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
+    src.PlacedFootprint = footprint;
+    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+    mCommandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    mCommandList->ResourceBarrier(1, &barrier);
+    ThrowIfFailed(mCommandList->Close());
+    ID3D12CommandList* lists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(1, lists);
+    FlushCommandQueue();
 }
 
 void DirectXApp::CreateColorTexture(

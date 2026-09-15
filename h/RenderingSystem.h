@@ -15,6 +15,7 @@
 #include "GBuffer.h"
 #include "CameraConstants.h"
 #include "ObjectConstants.h"
+#include "DdsLoader.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -106,6 +107,7 @@ private:
     bool CreateGBuffer(UINT width, UINT height);
     bool CreatePostProcessResources();
     bool CreateLightingResources();
+    bool LoadEnvironmentTexture(const std::string& path, ComPtr<ID3D12Resource>& texture, DdsImage& image);
 
     // Устройство и очередь
     ID3D12Device* mDevice;
@@ -127,6 +129,9 @@ private:
     ComPtr<ID3D12Resource> mShadowMap;
     ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap;
     ComPtr<ID3D12DescriptorHeap> mLightingSrvHeap;
+    ComPtr<ID3D12Resource> mIrradianceMap;
+    ComPtr<ID3D12Resource> mBrdfIntegrationMap;
+    ComPtr<ID3D12Resource> mPrefilteredEnvironmentMap;
     // Промежуточный результат освещения: его читает post-process pass.
     ComPtr<ID3D12Resource> mSceneColor;
     ComPtr<ID3D12DescriptorHeap> mPostProcessRtvHeap;

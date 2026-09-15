@@ -10,14 +10,19 @@ struct Material
     std::string DiffuseMap;
     std::string NormalMap;
     std::string HeightMap;
+    // Packed ORM map: metallic in B, roughness in G (Cerberus_M convention).
+    std::string MetallicRoughnessMap;
     UINT DiffuseSrvHeapIndex = 0;
     UINT NormalSrvHeapIndex = 0;
     UINT HeightSrvHeapIndex = 0;
+    UINT MetallicRoughnessSrvHeapIndex = 0;
     bool EnableTessellation = false;
     DXGI_FORMAT TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
     DXGI_FORMAT NormalFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
     DXGI_FORMAT HeightFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    DXGI_FORMAT MetallicRoughnessFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
     Microsoft::WRL::ComPtr<ID3D12Resource> DiffuseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> NormalTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> HeightTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MetallicRoughnessTexture;
 };

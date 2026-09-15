@@ -1,6 +1,7 @@
 Texture2D gDiffuseMap : register(t0);
 Texture2D gNormalMap : register(t1);
 Texture2D gHeightMap : register(t2);
+Texture2D gMetallicRoughnessMap : register(t3);
 SamplerState gSampler : register(s0);
 
 cbuffer cbPerObject : register(b0)
@@ -173,7 +174,8 @@ struct PSOutput
 {
     float4 Albedo : SV_Target0;
     float4 Normal : SV_Target1;
-    float Depth : SV_Target2;
+    float2 Material : SV_Target2;
+    float Depth : SV_Target3;
 };
 
 PSOutput PS(DSOutput pin)
@@ -185,9 +187,12 @@ PSOutput PS(DSOutput pin)
     float3 baseNormal = normalize(pin.WorldNormal);
     float3x3 tbn = BuildCotangentFrame(baseNormal, pin.WorldPos, pin.TexC);
     float3 mappedNormal = normalize(mul(normalSample, tbn));
+    float4 metallicRoughness = gMetallicRoughnessMap.Sample(gSampler, pin.TexC);
 
     pout.Albedo = albedo;
     pout.Normal = float4(mappedNormal, 1.0f);
+    // Cerberus_M is the usual glTF packing: roughness=G, metallic=B.
+    pout.Material = float2(metallicRoughness.b, max(metallicRoughness.g, 0.045f));
     pout.Depth = pin.PosH.z;
 
     return pout;

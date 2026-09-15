@@ -14,6 +14,16 @@ struct DdsImage
     uint32_t RowPitch = 0;
     uint32_t SlicePitch = 0;
     uint32_t RowCount = 0;
+    uint32_t ArraySize = 1;
+    bool IsCubeMap = false;
+    struct Subresource
+    {
+        uint32_t RowPitch = 0;
+        uint32_t RowCount = 0;
+        uint32_t SlicePitch = 0;
+        size_t Offset = 0;
+    };
+    std::vector<Subresource> Subresources;
     std::vector<uint8_t> Data;
 };
 

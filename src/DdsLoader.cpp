@@ -56,6 +56,9 @@ struct DdsHeaderDx10
     uint32_t MiscFlags2 = 0;
 };
 
+constexpr uint32_t DDS_RESOURCE_MISC_TEXTURECUBE = 0x4;
+constexpr uint32_t DDSCAPS2_CUBEMAP = 0x00000200;
+
 bool IsBitMask(const DdsPixelFormat& pf, uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 {
     return pf.RBitMask == r
@@ -97,6 +100,8 @@ bool IsBlockCompressed(DXGI_FORMAT format)
         case DXGI_FORMAT_BC2_UNORM:
         case DXGI_FORMAT_BC3_UNORM:
         case DXGI_FORMAT_BC7_UNORM:
+        case DXGI_FORMAT_BC6H_UF16:
+        case DXGI_FORMAT_BC6H_SF16:
             return true;
         default:
             return false;
@@ -112,7 +117,13 @@ uint32_t BytesPerBlock(DXGI_FORMAT format)
         case DXGI_FORMAT_BC2_UNORM:
         case DXGI_FORMAT_BC3_UNORM:
         case DXGI_FORMAT_BC7_UNORM:
+        case DXGI_FORMAT_BC6H_UF16:
+        case DXGI_FORMAT_BC6H_SF16:
             return 16;
+        case DXGI_FORMAT_R16G16_FLOAT:
+            return 4;
+        case DXGI_FORMAT_R32G32_FLOAT:
+            return 8;
         case DXGI_FORMAT_R8G8B8A8_UNORM:
         case DXGI_FORMAT_B8G8R8A8_UNORM:
             return 4;
@@ -149,8 +160,6 @@ bool LoadDDS(const std::string& filename, DdsImage& outImage)
             return false;
 
         dx10Ptr = &dx10Header;
-        if (dx10Header.ArraySize != 1)
-            return false;
     }
 
     const DXGI_FORMAT format = GetDxgiFormat(header.PixelFormat, dx10Ptr);
@@ -165,35 +174,46 @@ bool LoadDDS(const std::string& filename, DdsImage& outImage)
     const uint32_t width = header.Width;
     const uint32_t height = header.Height;
     const uint32_t mipCount = (std::max)(1u, header.MipMapCount);
-    if (mipCount != 1)
+    const bool isCubeMap = (dx10Ptr && (dx10Header.MiscFlag & DDS_RESOURCE_MISC_TEXTURECUBE) != 0)
+        || (header.Caps2 & DDSCAPS2_CUBEMAP) != 0;
+    const uint32_t arraySize = (dx10Ptr ? dx10Header.ArraySize : 1u) * (isCubeMap ? 6u : 1u);
+    if (arraySize == 0)
         return false;
-
-    uint32_t rowPitch = 0;
-    uint32_t rowCount = 0;
-    if (isBlockCompressed)
-    {
-        const uint32_t blockWidth = (std::max)(1u, (width + 3) / 4);
-        const uint32_t blockHeight = (std::max)(1u, (height + 3) / 4);
-        rowPitch = blockWidth * elementSize;
-        rowCount = blockHeight;
-    }
-    else
-    {
-        rowPitch = width * elementSize;
-        rowCount = height;
-    }
-
-    const uint32_t slicePitch = rowPitch * rowCount;
 
     outImage.Width = width;
     outImage.Height = height;
     outImage.MipCount = mipCount;
     outImage.Format = format;
-    outImage.RowPitch = rowPitch;
-    outImage.RowCount = rowCount;
-    outImage.SlicePitch = slicePitch;
-    outImage.Data.resize(slicePitch);
-
-    file.read(reinterpret_cast<char*>(outImage.Data.data()), slicePitch);
+    outImage.ArraySize = arraySize;
+    outImage.IsCubeMap = isCubeMap;
+    size_t totalSize = 0;
+    for (uint32_t slice = 0; slice < arraySize; ++slice)
+    {
+        uint32_t mipWidth = width;
+        uint32_t mipHeight = height;
+        for (uint32_t mip = 0; mip < mipCount; ++mip)
+        {
+            const uint32_t rowPitch = isBlockCompressed
+                ? (std::max)(1u, (mipWidth + 3) / 4) * elementSize
+                : mipWidth * elementSize;
+            const uint32_t rowCount = isBlockCompressed
+                ? (std::max)(1u, (mipHeight + 3) / 4)
+                : mipHeight;
+            const uint32_t slicePitch = rowPitch * rowCount;
+            outImage.Subresources.push_back({ rowPitch, rowCount, slicePitch, totalSize });
+            totalSize += slicePitch;
+            mipWidth = (std::max)(1u, mipWidth >> 1);
+            mipHeight = (std::max)(1u, mipHeight >> 1);
+        }
+    }
+    outImage.Data.resize(totalSize);
+    file.read(reinterpret_cast<char*>(outImage.Data.data()), static_cast<std::streamsize>(totalSize));
+    if (!outImage.Subresources.empty())
+    {
+        const auto& first = outImage.Subresources.front();
+        outImage.RowPitch = first.RowPitch;
+        outImage.RowCount = first.RowCount;
+        outImage.SlicePitch = first.SlicePitch;
+    }
     return file.good();
 }

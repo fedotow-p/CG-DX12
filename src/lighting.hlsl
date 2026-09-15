@@ -1,7 +1,11 @@
 Texture2D gAlbedoMap : register(t0);
 Texture2D gNormalMap : register(t1);
-Texture2D gDepthMap : register(t2);
-Texture2DArray gShadowMap : register(t3);
+Texture2D gMaterialMap : register(t2);
+Texture2D gDepthMap : register(t3);
+Texture2DArray gShadowMap : register(t4);
+TextureCube gIrradianceMap : register(t5);
+Texture2D gBrdfIntegrationMap : register(t6);
+TextureCube gPrefilteredEnvironmentMap : register(t7);
 SamplerState gSampler : register(s0);
 SamplerComparisonState gShadowSampler : register(s1);
 
@@ -54,6 +58,8 @@ struct GBufferData
 {
     float4 Albedo;
     float3 Normal;
+    float Metallic;
+    float Roughness;
     float Depth;
 };
 
@@ -62,6 +68,9 @@ GBufferData ReadGBuffer(float2 texCoord)
     GBufferData data;
     data.Albedo = gAlbedoMap.Sample(gSampler, texCoord);
     data.Normal = gNormalMap.Sample(gSampler, texCoord).xyz;
+    float2 material = gMaterialMap.Sample(gSampler, texCoord).rg;
+    data.Metallic = saturate(material.x);
+    data.Roughness = max(material.y, 0.045f);
     data.Depth = gDepthMap.Sample(gSampler, texCoord).r;
     return data;
 }
@@ -118,12 +127,81 @@ float GetShadowFactor(float3 worldPos)
     return visibility / 9.0f;
 }
 
+static const float PI = 3.14159265359f;
+
+float DistributionGGX(float3 N, float3 H, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float nDotH = saturate(dot(N, H));
+    float nDotH2 = nDotH * nDotH;
+    float denominator = nDotH2 * (a2 - 1.0f) + 1.0f;
+    return a2 / max(PI * denominator * denominator, 0.0001f);
+}
+
+float GeometrySchlickGGX(float nDotV, float roughness)
+{
+    float k = (roughness + 1.0f);
+    k = (k * k) / 8.0f;
+    return nDotV / max(nDotV * (1.0f - k) + k, 0.0001f);
+}
+
+float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
+{
+    return GeometrySchlickGGX(saturate(dot(N, V)), roughness)
+         * GeometrySchlickGGX(saturate(dot(N, L)), roughness);
+}
+
+float3 FresnelSchlick(float cosine, float3 F0)
+{
+    return F0 + (1.0f - F0) * pow(1.0f - cosine, 5.0f);
+}
+
+float3 FresnelSchlickRoughness(float cosine, float3 F0, float roughness)
+{
+    return F0 + (max(1.0f - roughness, F0) - F0) * pow(1.0f - cosine, 5.0f);
+}
+
+float3 EvaluateDirectPbr(float3 N, float3 V, float3 L, float3 radiance,
+    float3 albedo, float metallic, float roughness)
+{
+    float3 H = normalize(V + L);
+    float3 F0 = lerp(0.04f.xxx, albedo, metallic);
+    float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
+    float NDF = DistributionGGX(N, H, roughness);
+    float G = GeometrySmith(N, V, L, roughness);
+    float denominator = max(4.0f * saturate(dot(N, V)) * saturate(dot(N, L)), 0.0001f);
+    float3 specular = (NDF * G * F) / denominator;
+    float3 kS = F;
+    float3 kD = (1.0f - kS) * (1.0f - metallic);
+    return (kD * albedo / PI + specular) * radiance * saturate(dot(N, L));
+}
+
+float3 EvaluateIBL(float3 N, float3 V, float3 albedo, float metallic, float roughness)
+{
+    float nDotV = saturate(dot(N, V));
+    float3 F0 = lerp(0.04f.xxx, albedo, metallic);
+    float3 F = FresnelSchlickRoughness(nDotV, F0, roughness);
+    float3 kS = F;
+    float3 kD = (1.0f - kS) * (1.0f - metallic);
+    float3 irradiance = gIrradianceMap.Sample(gSampler, N).rgb;
+    float3 diffuse = irradiance * albedo;
+    float3 reflection = reflect(-V, N);
+    const float maxReflectionLod = 11.0f;
+    float3 prefiltered = gPrefilteredEnvironmentMap.SampleLevel(gSampler, reflection, roughness * maxReflectionLod).rgb;
+    float2 brdf = gBrdfIntegrationMap.Sample(gSampler, float2(nDotV, roughness)).rg;
+    float3 specular = prefiltered * (F * brdf.x + brdf.y);
+    return kD * diffuse + specular;
+}
+
 float4 PS(PSInput pin) : SV_Target
 {
     // Заготовка PS: считываем входные текстуры G-buffer по экранным UV.
     GBufferData gbuffer = ReadGBuffer(pin.TexC);
     float4 albedo = gbuffer.Albedo;
     float3 normal = normalize(gbuffer.Normal);
+    float metallic = gbuffer.Metallic;
+    float roughness = gbuffer.Roughness;
     float depth = gbuffer.Depth;
 
     // Восстанавливаем мировую позицию
@@ -144,13 +222,13 @@ float4 PS(PSInput pin) : SV_Target
     // Расчет освещения в зависимости от типа
     if (gLightType == LIGHT_AMBIENT)
     {
-        result = albedo.rgb * gAmbientColor;
+        result = EvaluateIBL(normal, viewDir, albedo.rgb, metallic, roughness);
     }
     if (gLightType == LIGHT_DIRECTIONAL)
     {
         float3 lightDir = normalize(-gLightDir);
-        float diff = max(dot(normal, lightDir), 0.0f);
-        result = diff * gLightColor * gLightIntensity * albedo.rgb * GetShadowFactor(worldPos);
+        result = EvaluateDirectPbr(normal, viewDir, lightDir, gLightColor * gLightIntensity,
+            albedo.rgb, metallic, roughness) * GetShadowFactor(worldPos);
     }
     if (gLightType == LIGHT_POINT)
     {
@@ -161,8 +239,8 @@ float4 PS(PSInput pin) : SV_Target
         float attenuation = 1.0f - saturate(distance / gLightRange);
         attenuation = attenuation * attenuation;
 
-        float diff = max(dot(normal, lightDir), 0.0f);
-        result = diff * gLightColor * gLightIntensity * albedo.rgb * attenuation;
+        result = EvaluateDirectPbr(normal, viewDir, lightDir, gLightColor * gLightIntensity * attenuation,
+            albedo.rgb, metallic, roughness);
     }
     if (gLightType == LIGHT_SPOT)
     {
@@ -180,8 +258,8 @@ float4 PS(PSInput pin) : SV_Target
             attenuation = attenuation * attenuation;
 
             float spotFactor = saturate((cosAngle - cosCone) / (1.0f - cosCone));
-            float diff = max(dot(normal, lightDir), 0.0f);
-            result = diff * gLightColor * gLightIntensity * albedo.rgb * attenuation * spotFactor;
+            result = EvaluateDirectPbr(normal, viewDir, lightDir,
+                gLightColor * gLightIntensity * attenuation * spotFactor, albedo.rgb, metallic, roughness);
         }
     }
 

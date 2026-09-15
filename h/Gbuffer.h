@@ -13,6 +13,7 @@ public:
     {
         GBUFFER_ALBEDO = 0,  // RGB - Albedo, A - unused
         GBUFFER_NORMAL,      // RGB - Normal, A - unused
+        GBUFFER_MATERIAL,    // R - metallic, G - roughness
         GBUFFER_DEPTH,
         GBUFFER_COUNT
     };
@@ -62,5 +63,6 @@ private:
     // Форматы текстур
     static constexpr DXGI_FORMAT mAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     static constexpr DXGI_FORMAT mNormalFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;  // Для точности нормалей
+    static constexpr DXGI_FORMAT mMaterialFormat = DXGI_FORMAT_R8G8_UNORM;
     static constexpr DXGI_FORMAT mDepthFormat = DXGI_FORMAT_R32_FLOAT;
 };

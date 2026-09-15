@@ -2,6 +2,7 @@
 #include "../h/d3dx12.h"
 #include "../h/d3dUtil.h"
 #include "../h/ThrowIfFailed.h"
+#include "../h/DdsLoader.h"
 #include <DirectXMath.h>
 #include <array>
 #include <algorithm>
@@ -18,6 +19,73 @@ bool IsAnimatedFlagMaterial(const Material& material)
     return name == "fabric"
         || name.rfind("fabric_", 0) == 0;
 }
+}
+
+bool RenderingSystem::LoadEnvironmentTexture(const std::string& path, ComPtr<ID3D12Resource>& texture, DdsImage& image)
+{
+    if (!LoadDDS(path, image))
+        return false;
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = image.Width;
+    desc.Height = image.Height;
+    desc.DepthOrArraySize = static_cast<UINT16>(image.ArraySize);
+    desc.MipLevels = static_cast<UINT16>(image.MipCount);
+    desc.Format = image.Format;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    D3D12_HEAP_PROPERTIES defaultHeap = {};
+    defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    ThrowIfFailed(mDevice->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture)));
+    const UINT count = static_cast<UINT>(image.Subresources.size());
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(count);
+    std::vector<UINT> rows(count);
+    std::vector<UINT64> rowSizes(count);
+    UINT64 uploadSize = 0;
+    mDevice->GetCopyableFootprints(&desc, 0, count, 0, layouts.data(), rows.data(), rowSizes.data(), &uploadSize);
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC uploadDesc = {};
+    uploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    uploadDesc.Width = uploadSize;
+    uploadDesc.Height = 1;
+    uploadDesc.DepthOrArraySize = 1;
+    uploadDesc.MipLevels = 1;
+    uploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    uploadDesc.SampleDesc.Count = 1;
+    ComPtr<ID3D12Resource> upload;
+    ThrowIfFailed(mDevice->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &uploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)));
+    uint8_t* mapped = nullptr;
+    ThrowIfFailed(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped)));
+    for (UINT i = 0; i < count; ++i)
+    {
+        const auto& source = image.Subresources[i];
+        uint8_t* destination = mapped + layouts[i].Offset;
+        const uint8_t* sourceData = image.Data.data() + source.Offset;
+        for (UINT row = 0; row < source.RowCount; ++row)
+            memcpy(destination + row * layouts[i].Footprint.RowPitch,
+                sourceData + row * source.RowPitch, source.RowPitch);
+    }
+    upload->Unmap(0, nullptr);
+    PrepareCommandAllocator(mLightingCommandAllocator.Get(), mLightingFenceValue);
+    ThrowIfFailed(mCommandList->Reset(mLightingCommandAllocator.Get(), nullptr));
+    for (UINT i = 0; i < count; ++i)
+    {
+        D3D12_TEXTURE_COPY_LOCATION dst = { texture.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+        dst.SubresourceIndex = i;
+        D3D12_TEXTURE_COPY_LOCATION src = { upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
+        src.PlacedFootprint = layouts[i];
+        mCommandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    mCommandList->ResourceBarrier(1, &barrier);
+    ThrowIfFailed(mCommandList->Close());
+    SubmitCommandList(mLightingFenceValue);
+    FlushCommandQueue();
+    return true;
 }
 
 RenderingSystem::RenderingSystem(
@@ -283,11 +351,11 @@ bool RenderingSystem::CreateLightingResources()
 
     D3D12_DESCRIPTOR_HEAP_DESC lightingHeapDesc = {};
     lightingHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    lightingHeapDesc.NumDescriptors = 4;
+    lightingHeapDesc.NumDescriptors = 8;
     lightingHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     ThrowIfFailed(mDevice->CreateDescriptorHeap(&lightingHeapDesc, IID_PPV_ARGS(&mLightingSrvHeap)));
     auto lightingSrv = mLightingSrvHeap->GetCPUDescriptorHandleForHeapStart();
-    for (UINT i = 0; i < 3; ++i)
+    for (UINT i = 0; i < 4; ++i)
     {
         mDevice->CopyDescriptorsSimple(1, lightingSrv, mGBuffer->GetSRV((GBuffer::GBUFFER_TEXTURE_TYPE)i),
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -300,6 +368,30 @@ bool RenderingSystem::CreateLightingResources()
     shadowSrv.Texture2DArray.ArraySize = cascadeCount;
     shadowSrv.Texture2DArray.MipLevels = 1;
     mDevice->CreateShaderResourceView(mShadowMap.Get(), &shadowSrv, lightingSrv);
+    lightingSrv.ptr += mCbvSrvUavDescriptorSize;
+
+    DdsImage irradianceImage, brdfImage, prefilteredImage;
+    if (!LoadEnvironmentTexture("../assets/IrradianceMap_BC6U.dds", mIrradianceMap, irradianceImage)
+        || !LoadEnvironmentTexture("../assets/IntegrationMap.dds", mBrdfIntegrationMap, brdfImage)
+        || !LoadEnvironmentTexture("../assets/PreFilteredEnvMap_BC6U.dds", mPrefilteredEnvironmentMap, prefilteredImage))
+        return false;
+    D3D12_SHADER_RESOURCE_VIEW_DESC cubeSrv = {};
+    cubeSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    cubeSrv.Format = irradianceImage.Format;
+    cubeSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+    cubeSrv.TextureCube.MipLevels = irradianceImage.MipCount;
+    mDevice->CreateShaderResourceView(mIrradianceMap.Get(), &cubeSrv, lightingSrv);
+    lightingSrv.ptr += mCbvSrvUavDescriptorSize;
+    D3D12_SHADER_RESOURCE_VIEW_DESC brdfSrv = {};
+    brdfSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    brdfSrv.Format = brdfImage.Format;
+    brdfSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    brdfSrv.Texture2D.MipLevels = brdfImage.MipCount;
+    mDevice->CreateShaderResourceView(mBrdfIntegrationMap.Get(), &brdfSrv, lightingSrv);
+    lightingSrv.ptr += mCbvSrvUavDescriptorSize;
+    cubeSrv.Format = prefilteredImage.Format;
+    cubeSrv.TextureCube.MipLevels = prefilteredImage.MipCount;
+    mDevice->CreateShaderResourceView(mPrefilteredEnvironmentMap.Get(), &cubeSrv, lightingSrv);
 
     // Загружаем шейдеры
     auto vsLighting = d3dUtil::CompileShader(
@@ -333,7 +425,7 @@ bool RenderingSystem::CreateLightingResources()
 
     // SRV для Albedo (t0)
     srvRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRanges[0].NumDescriptors = 4;
+    srvRanges[0].NumDescriptors = 8;
     srvRanges[0].BaseShaderRegister = 0;
     srvRanges[0].RegisterSpace = 0;
     srvRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -622,12 +714,13 @@ void RenderingSystem::GeometryPass(
     mGBuffer->ClearRenderTargets(mCommandList);   // очистит Albedo, Normal, Depth
     mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[3] = {
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[4] = {
         mGBuffer->GetRTV(GBuffer::GBUFFER_ALBEDO),
         mGBuffer->GetRTV(GBuffer::GBUFFER_NORMAL),
+        mGBuffer->GetRTV(GBuffer::GBUFFER_MATERIAL),
         mGBuffer->GetRTV(GBuffer::GBUFFER_DEPTH)
     };
-    mCommandList->OMSetRenderTargets(3, rtvHandles, false, &dsvHandle);
+    mCommandList->OMSetRenderTargets(4, rtvHandles, false, &dsvHandle);
 
     // Viewport, scissor, root signature, descriptor heap
     mCommandList->RSSetViewports(1, &viewport);
@@ -692,7 +785,10 @@ void RenderingSystem::GeometryPass(
         mCommandList->SetGraphicsRootDescriptorTable(3, srvHandle3);
 
         const float isFlag = IsAnimatedFlagMaterial(*mat) ? 1.0f : 0.0f;
-        mCommandList->SetGraphicsRoot32BitConstant(4, *reinterpret_cast<const UINT*>(&isFlag), 0);
+        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle4 = cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
+        srvHandle4.ptr += (1 + mat->MetallicRoughnessSrvHeapIndex) * cbvSrvDescriptorSize;
+        mCommandList->SetGraphicsRootDescriptorTable(4, srvHandle4);
+        mCommandList->SetGraphicsRoot32BitConstant(5, *reinterpret_cast<const UINT*>(&isFlag), 0);
 
         mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
         mGeometryPassStats.DrawnSubmeshes++;
@@ -862,6 +958,9 @@ void RenderingSystem::Shutdown()
     mShadowMap.Reset();
     mShadowDsvHeap.Reset();
     mLightingSrvHeap.Reset();
+    mIrradianceMap.Reset();
+    mBrdfIntegrationMap.Reset();
+    mPrefilteredEnvironmentMap.Reset();
     mSceneColor.Reset();
     mPostProcessRtvHeap.Reset();
     mPostProcessSrvHeap.Reset();
