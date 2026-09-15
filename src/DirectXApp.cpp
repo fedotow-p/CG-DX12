@@ -61,6 +61,8 @@ DirectXApp::DirectXApp(Window& window) : window(window)
     XMStoreFloat4x4(&mWorld, XMMatrixIdentity());
     XMStoreFloat4x4(&mView, XMMatrixIdentity());
     XMStoreFloat4x4(&mProj, XMMatrixIdentity());
+    XMStoreFloat4x4(&mOverviewView, XMMatrixIdentity());
+    XMStoreFloat4x4(&mOverviewProj, XMMatrixIdentity());
     mRenderingSystem = nullptr;
 }
 
@@ -152,6 +154,20 @@ void DirectXApp::BuildShaders()
         "ps_5_0"
     );
 
+    mDebugVsByteCode = d3dUtil::CompileShader(
+        L"../src/shaders.hlsl",
+        nullptr,
+        "DebugVS",
+        "vs_5_0"
+    );
+
+    mDebugPsByteCode = d3dUtil::CompileShader(
+        L"../src/shaders.hlsl",
+        nullptr,
+        "DebugPS",
+        "ps_5_0"
+    );
+
     //MessageBox(NULL, L"SUCCESS! Shaders compiled", L"Info", MB_OK);
 }
 
@@ -161,7 +177,7 @@ void DirectXApp::BuildConstantBuffer()
     // Upload Buffer
     mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(
         device.Get(),
-        1,
+        CameraViewCount,
         true
     );
 
@@ -176,19 +192,8 @@ void DirectXApp::BuildConstantBuffer()
     objConstants.mUVTransform = XMFLOAT4(2.0f, 2.0f, 0.0f, 0.0f); // scale 2x для тайлинга
     objConstants.mTessellationParams = XMFLOAT4(16.0f, 2.0f, 3.5f, 9.0f);
 
-    mObjectCB->CopyData(0, objConstants);
-
-    // Make CBV (Constant Buffer View) in a heap of descriptors
-    UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-    D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
-
-    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-    cbvDesc.BufferLocation = cbAddress;
-    cbvDesc.SizeInBytes = objCBByteSize;
-
-    // Getting descriptors from CBV heap
-    D3D12_CPU_DESCRIPTOR_HANDLE cbvHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
-    device->CreateConstantBufferView(&cbvDesc, cbvHandle);
+    for (UINT viewIndex = 0; viewIndex < CameraViewCount; ++viewIndex)
+        mObjectCB->CopyData(viewIndex, objConstants);
 
     //MessageBox(NULL, L"Constant buffer and CBV created", L"Info", MB_OK);
 }
@@ -196,14 +201,6 @@ void DirectXApp::BuildConstantBuffer()
 // =========== Root Signature ===========
 void DirectXApp::BuildRootSignature()
 {
-    // CBV range (b0)
-    D3D12_DESCRIPTOR_RANGE cbvRange = {};
-    cbvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-    cbvRange.NumDescriptors = 1;
-    cbvRange.BaseShaderRegister = 0;
-    cbvRange.RegisterSpace = 0;
-    cbvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
     // SRV range for texture1 (t0)
     D3D12_DESCRIPTOR_RANGE srvRange1 = {};
     srvRange1.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -228,12 +225,12 @@ void DirectXApp::BuildRootSignature()
     srvRange3.RegisterSpace = 0;
     srvRange3.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParameters[5];
+    D3D12_ROOT_PARAMETER rootParameters[5] = {};
 
-    // Slot 0 → CBV
-    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
-    rootParameters[0].DescriptorTable.pDescriptorRanges = &cbvRange;
+    // Slot 0 → direct CBV (b0)
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParameters[0].Descriptor.ShaderRegister = 0;
+    rootParameters[0].Descriptor.RegisterSpace = 0;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Slot 1 → SRV for albedo (t0)
@@ -397,6 +394,59 @@ void DirectXApp::BuildPSO()
     //MessageBox(NULL, L"PSO created successfully (Solid Mode)", L"Info", MB_OK);
 }
 
+void DirectXApp::BuildFrustumDebugResources()
+{
+    if (!mDebugVsByteCode || !mDebugPsByteCode || !mRootSignature)
+        return;
+
+    const D3D12_INPUT_ELEMENT_DESC inputElement =
+    {
+        "POSITION",
+        0,
+        DXGI_FORMAT_R32G32B32_FLOAT,
+        0,
+        0,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+        0
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.VS = { mDebugVsByteCode->GetBufferPointer(), mDebugVsByteCode->GetBufferSize() };
+    psoDesc.PS = { mDebugPsByteCode->GetBufferPointer(), mDebugPsByteCode->GetBufferSize() };
+    psoDesc.InputLayout = { &inputElement, 1 };
+    psoDesc.pRootSignature = mRootSignature.Get();
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState.DepthEnable = FALSE;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = mBackBufferFormat;
+    psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    psoDesc.SampleDesc.Count = 1;
+
+    const HRESULT hr = device->CreateGraphicsPipelineState(
+        &psoDesc,
+        IID_PPV_ARGS(&mFrustumPSO));
+    if (FAILED(hr))
+    {
+        MessageBox(nullptr, L"Failed to create frustum debug PSO", L"Error", MB_OK);
+        return;
+    }
+
+    mFrustumVertexBuffer = std::make_unique<UploadBuffer<XMFLOAT3>>(
+        device.Get(),
+        FrustumVertexCount,
+        false);
+    mFrustumVertexBufferView.BufferLocation =
+        mFrustumVertexBuffer->Resource()->GetGPUVirtualAddress();
+    mFrustumVertexBufferView.StrideInBytes = sizeof(XMFLOAT3);
+    mFrustumVertexBufferView.SizeInBytes = FrustumVertexCount * sizeof(XMFLOAT3);
+}
+
 // =========== Остальные методы ===========
 void DirectXApp::BuildObj(const std::string& path)
 {
@@ -502,6 +552,112 @@ void DirectXApp::RebuildSpatialIndex()
     BuildSubmeshBounds();
     mSubmeshOctree.Rebuild(mSubmeshes);
     mVisibleSubmeshIndices.reserve(mSubmeshes.size());
+
+    BuildOverviewCamera();
+}
+
+void DirectXApp::BuildOverviewCamera()
+{
+    XMFLOAT3 boundsMin(
+        (std::numeric_limits<float>::max)(),
+        (std::numeric_limits<float>::max)(),
+        (std::numeric_limits<float>::max)());
+    XMFLOAT3 boundsMax(
+        (std::numeric_limits<float>::lowest)(),
+        (std::numeric_limits<float>::lowest)(),
+        (std::numeric_limits<float>::lowest)());
+    bool hasBounds = false;
+
+    for (const Submesh& submesh : mSubmeshes)
+    {
+        if (!submesh.HasBounds)
+            continue;
+
+        hasBounds = true;
+        boundsMin.x = (std::min)(boundsMin.x, submesh.BoundsMin.x);
+        boundsMin.y = (std::min)(boundsMin.y, submesh.BoundsMin.y);
+        boundsMin.z = (std::min)(boundsMin.z, submesh.BoundsMin.z);
+        boundsMax.x = (std::max)(boundsMax.x, submesh.BoundsMax.x);
+        boundsMax.y = (std::max)(boundsMax.y, submesh.BoundsMax.y);
+        boundsMax.z = (std::max)(boundsMax.z, submesh.BoundsMax.z);
+    }
+
+    if (!hasBounds)
+    {
+        boundsMin = { -1.0f, -1.0f, -1.0f };
+        boundsMax = { 1.0f, 1.0f, 1.0f };
+    }
+
+    const float centerX = (boundsMin.x + boundsMax.x) * 0.5f;
+    const float centerY = (boundsMin.y + boundsMax.y) * 0.5f;
+    const float centerZ = (boundsMin.z + boundsMax.z) * 0.5f;
+    const float sceneWidth = (std::max)(boundsMax.x - boundsMin.x, 1.0f);
+    const float sceneDepth = (std::max)(boundsMax.z - boundsMin.z, 1.0f);
+    const float sceneHeight = (std::max)(boundsMax.y - boundsMin.y, 1.0f);
+    const float aspect = mOverviewViewport.Height > 0.0f
+        ? mOverviewViewport.Width / mOverviewViewport.Height
+        : static_cast<float>(mClientWidth) / static_cast<float>(mClientHeight);
+
+    constexpr float kOverviewMargin = 1.1f;
+    float orthoWidth = sceneWidth * kOverviewMargin;
+    float orthoHeight = sceneDepth * kOverviewMargin;
+    if (orthoWidth / orthoHeight < aspect)
+        orthoWidth = orthoHeight * aspect;
+    else
+        orthoHeight = orthoWidth / aspect;
+
+    const float cameraClearance = (std::max)(sceneHeight + 10.0f, 20.0f);
+    mOverviewEyePos = { centerX, boundsMax.y + cameraClearance, centerZ };
+
+    const XMVECTOR eye = XMLoadFloat3(&mOverviewEyePos);
+    const XMVECTOR target = XMVectorSet(centerX, centerY, centerZ, 1.0f);
+    const XMVECTOR up = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+    const XMMATRIX view = XMMatrixLookAtLH(eye, target, up);
+    const float farPlane = mOverviewEyePos.y - boundsMin.y + 10.0f;
+    const XMMATRIX projection = XMMatrixOrthographicLH(
+        orthoWidth,
+        orthoHeight,
+        0.1f,
+        farPlane);
+
+    XMStoreFloat4x4(&mOverviewView, view);
+    XMStoreFloat4x4(&mOverviewProj, projection);
+}
+
+void DirectXApp::UpdateFrustumVertices(FXMMATRIX inverseViewProjection)
+{
+    if (!mFrustumVertexBuffer)
+        return;
+
+    static const XMFLOAT3 clipCorners[8] =
+    {
+        { -1.0f, -1.0f, 0.0f },
+        { -1.0f,  1.0f, 0.0f },
+        {  1.0f,  1.0f, 0.0f },
+        {  1.0f, -1.0f, 0.0f },
+        { -1.0f, -1.0f, 1.0f },
+        { -1.0f,  1.0f, 1.0f },
+        {  1.0f,  1.0f, 1.0f },
+        {  1.0f, -1.0f, 1.0f }
+    };
+    static constexpr uint32_t edgeIndices[FrustumVertexCount] =
+    {
+        0, 1, 1, 2, 2, 3, 3, 0,
+        4, 5, 5, 6, 6, 7, 7, 4,
+        0, 4, 1, 5, 2, 6, 3, 7
+    };
+
+    XMFLOAT3 worldCorners[8];
+    for (UINT i = 0; i < 8; ++i)
+    {
+        const XMVECTOR corner = XMLoadFloat3(&clipCorners[i]);
+        XMStoreFloat3(
+            &worldCorners[i],
+            XMVector3TransformCoord(corner, inverseViewProjection));
+    }
+
+    for (UINT i = 0; i < FrustumVertexCount; ++i)
+        mFrustumVertexBuffer->CopyData(i, worldCorners[edgeIndices[i]]);
 }
 
 void DirectXApp::BuildVisibleSubmeshList()
@@ -751,8 +907,12 @@ void DirectXApp::Shutdown() {
     FlushCommandQueue();
 
     // Освобождаем PSO
+    mFrustumPSO.Reset();
     mPSO.Reset();
     mRootSignature.Reset();
+    mFrustumVertexBuffer.reset();
+    mDebugVsByteCode.Reset();
+    mDebugPsByteCode.Reset();
 
     if (mRenderingSystem)
     {
@@ -763,6 +923,8 @@ void DirectXApp::Shutdown() {
 
     // Освобождаем constant buffers
     mObjectCB.reset();
+    mCameraCB.reset();
+    mLightingCB.reset();
 
     for (int i = 0; i < SwapChainBufferCount; i++) {
         mSwapChainBuffer[i].Reset();
@@ -1070,6 +1232,24 @@ void DirectXApp::CreateViewportAndScissor() {
     mScreenViewport.MaxDepth = 1.0f;
 
     mScissorRect = { 0, 0, mClientWidth, mClientHeight };
+
+    constexpr float kOverviewScale = 0.35f;
+    constexpr float kOverviewMargin = 12.0f;
+    mOverviewViewport.Width = static_cast<float>(mClientWidth) * kOverviewScale;
+    mOverviewViewport.Height = static_cast<float>(mClientHeight) * kOverviewScale;
+    mOverviewViewport.TopLeftX = static_cast<float>(mClientWidth)
+        - mOverviewViewport.Width - kOverviewMargin;
+    mOverviewViewport.TopLeftY = kOverviewMargin;
+    mOverviewViewport.MinDepth = 0.0f;
+    mOverviewViewport.MaxDepth = 1.0f;
+
+    mOverviewScissorRect =
+    {
+        static_cast<LONG>(mOverviewViewport.TopLeftX),
+        static_cast<LONG>(mOverviewViewport.TopLeftY),
+        static_cast<LONG>(mOverviewViewport.TopLeftX + mOverviewViewport.Width),
+        static_cast<LONG>(mOverviewViewport.TopLeftY + mOverviewViewport.Height)
+    };
 }
 
 void DirectXApp::SetViewportAndScissor() {
@@ -1261,10 +1441,11 @@ bool DirectXApp::Initialize() {
     BuildShaders();
     BuildPSO();
     BuildConstantBuffer();
+    BuildFrustumDebugResources();
 
     mCameraCB = std::make_unique<UploadBuffer<CameraConstants>>(
         device.Get(),
-        1,
+        CameraViewCount,
         true);
 
     mLights.clear();
@@ -1510,16 +1691,34 @@ void DirectXApp::Update(const Timer& gt)
         1000.0f);
     XMStoreFloat4x4(&mProj, proj);
 
-    XMMATRIX viewProj = view * proj;
+    const XMMATRIX viewProj = view * proj;
     mViewFrustum = Frustum::FromViewProjection(viewProj);
     BuildVisibleSubmeshList();
-    XMMATRIX invViewProj = XMMatrixInverse(nullptr, viewProj);
+    const XMMATRIX invViewProj = XMMatrixInverse(nullptr, viewProj);
+    UpdateFrustumVertices(invViewProj);
 
-    CameraConstants camConstants;
-    XMStoreFloat4x4(&camConstants.mInvViewProj, XMMatrixTranspose(invViewProj));
-    camConstants.mCameraPos = mEyePos;                     // позиция камеры
-    camConstants.mScreenSize = { (float)mClientWidth, (float)mClientHeight };
-    mCameraCB->CopyData(0, camConstants);
+    const XMMATRIX overviewView = XMLoadFloat4x4(&mOverviewView);
+    const XMMATRIX overviewProj = XMLoadFloat4x4(&mOverviewProj);
+    const XMMATRIX overviewViewProj = overviewView * overviewProj;
+    const XMMATRIX overviewInvViewProj = XMMatrixInverse(nullptr, overviewViewProj);
+
+    CameraConstants mainCameraConstants;
+    XMStoreFloat4x4(
+        &mainCameraConstants.mInvViewProj,
+        XMMatrixTranspose(invViewProj));
+    mainCameraConstants.mCameraPos = mEyePos;
+    mainCameraConstants.mScreenSize =
+        { static_cast<float>(mClientWidth), static_cast<float>(mClientHeight) };
+    mCameraCB->CopyData(MainViewIndex, mainCameraConstants);
+
+    CameraConstants overviewCameraConstants;
+    XMStoreFloat4x4(
+        &overviewCameraConstants.mInvViewProj,
+        XMMatrixTranspose(overviewInvViewProj));
+    overviewCameraConstants.mCameraPos = mOverviewEyePos;
+    overviewCameraConstants.mScreenSize =
+        { static_cast<float>(mClientWidth), static_cast<float>(mClientHeight) };
+    mCameraCB->CopyData(OverviewViewIndex, overviewCameraConstants);
 
     if (mPendingLightProjectileSpawn)
     {
@@ -1564,8 +1763,8 @@ void DirectXApp::Update(const Timer& gt)
     mUVScaleV = max(0.1f, mUVScaleV);
 
     // ===== WVP и UV Transform =====
-    XMMATRIX world = XMMatrixIdentity();
-    XMMATRIX worldViewProj = world * view * proj;
+    const XMMATRIX world = XMMatrixIdentity();
+    const XMMATRIX worldViewProj = world * view * proj;
     static float animationTime = 0.0f;
     animationTime += dt;
 
@@ -1578,7 +1777,18 @@ void DirectXApp::Update(const Timer& gt)
     objConstants.mCameraPos = XMFLOAT4(mEyePos.x, mEyePos.y, mEyePos.z, 1.0f);
     objConstants.mTessellationParams = XMFLOAT4(16.0f, 2.0f, 3.5f, 9.0f);
 
-    mObjectCB->CopyData(0, objConstants);
+    mObjectCB->CopyData(MainViewIndex, objConstants);
+
+    ObjectConstants overviewConstants = objConstants;
+    XMStoreFloat4x4(
+        &overviewConstants.mWorldViewProj,
+        XMMatrixTranspose(world * overviewViewProj));
+    overviewConstants.mCameraPos = XMFLOAT4(
+        mOverviewEyePos.x,
+        mOverviewEyePos.y,
+        mOverviewEyePos.z,
+        1.0f);
+    mObjectCB->CopyData(OverviewViewIndex, overviewConstants);
 
     // ===== ОБНОВЛЕНИЕ ПАРАМЕТРОВ ОСВЕЩЕНИЯ =====
 
@@ -1741,11 +1951,34 @@ bool DirectXApp::RayIntersectsTriangle(
 
 void DirectXApp::Draw(const Timer& gt)
 {
+    const D3D12_GPU_VIRTUAL_ADDRESS objectConstantsBase =
+        mObjectCB->Resource()->GetGPUVirtualAddress();
+    const D3D12_GPU_VIRTUAL_ADDRESS mainObjectConstants =
+        objectConstantsBase
+        + static_cast<UINT64>(MainViewIndex) * mObjectCB->GetElementSize();
+    const D3D12_GPU_VIRTUAL_ADDRESS overviewObjectConstants =
+        objectConstantsBase
+        + static_cast<UINT64>(OverviewViewIndex) * mObjectCB->GetElementSize();
+
+    const D3D12_GPU_VIRTUAL_ADDRESS cameraConstantsBase =
+        mCameraCB->Resource()->GetGPUVirtualAddress();
+    const D3D12_GPU_VIRTUAL_ADDRESS mainCameraConstants =
+        cameraConstantsBase
+        + static_cast<UINT64>(MainViewIndex) * mCameraCB->GetElementSize();
+    const D3D12_GPU_VIRTUAL_ADDRESS overviewCameraConstants =
+        cameraConstantsBase
+        + static_cast<UINT64>(OverviewViewIndex) * mCameraCB->GetElementSize();
+
+    ID3D12Resource* backBuffer = CurrentBackBuffer();
+    const D3D12_CPU_DESCRIPTOR_HANDLE backBufferView = CurrentBackBufferView();
+    mRenderingSystem->BeginFrame(backBuffer);
+
     mRenderingSystem->GeometryPass(
         mPSO.Get(),
         mRootSignature.Get(),
         mCbvHeap.Get(),
         mCbvSrvUavDescriptorSize,
+        mainObjectConstants,
         mSubmeshes,
         mMaterials,
         mVisibleSubmeshIndices,
@@ -1757,21 +1990,64 @@ void DirectXApp::Draw(const Timer& gt)
         mDepthStencilBuffer.Get(),
         DepthStencilView(),
         mScreenViewport,
-        mScissorRect);
+        mScissorRect,
+        true);
     mRenderingSystem->LightingPass(
-        CurrentBackBuffer(),
-        CurrentBackBufferView(),
+        backBufferView,
         mLights,
         mEyePos,
         mScreenViewport,
         mScissorRect,
-        mCurrBackBuffer,
-        mSwapChain.Get(),
+        MainViewIndex,
+        mainCameraConstants,
         mRenderingSystem->GetLightingPSO(),
         mRenderingSystem->GetLightingRootSignature(),
-        mRenderingSystem->GetLightingCB(),
-        mCameraCB.get(),
         mRenderingSystem->GetGBuffer());
+
+    mRenderingSystem->GeometryPass(
+        mPSO.Get(),
+        mRootSignature.Get(),
+        mCbvHeap.Get(),
+        mCbvSrvUavDescriptorSize,
+        overviewObjectConstants,
+        mSubmeshes,
+        mMaterials,
+        mVisibleSubmeshIndices,
+        mOctreeTraversalStats,
+        mVertexBufferGPU.Get(),
+        mIndexBufferGPU.Get(),
+        mVertexBufferView,
+        mIndexBufferView,
+        mDepthStencilBuffer.Get(),
+        DepthStencilView(),
+        mScreenViewport,
+        mScissorRect,
+        false);
+    mRenderingSystem->LightingPass(
+        backBufferView,
+        mLights,
+        mOverviewEyePos,
+        mOverviewViewport,
+        mOverviewScissorRect,
+        OverviewViewIndex,
+        overviewCameraConstants,
+        mRenderingSystem->GetLightingPSO(),
+        mRenderingSystem->GetLightingRootSignature(),
+        mRenderingSystem->GetGBuffer());
+
+    mRenderingSystem->DebugFrustumPass(
+        mFrustumPSO.Get(),
+        mRootSignature.Get(),
+        overviewObjectConstants,
+        backBufferView,
+        mFrustumVertexBufferView,
+        FrustumVertexCount,
+        mOverviewViewport,
+        mOverviewScissorRect);
+
+    mRenderingSystem->EndFrame(backBuffer);
+    ThrowIfFailed(mSwapChain->Present(0, 0));
+    mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
 
     FlushCommandQueue(); // ОДИН РАЗ В КОНЦЕ!
 

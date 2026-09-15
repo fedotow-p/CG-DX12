@@ -59,6 +59,31 @@ bool RenderingSystem::Initialize(UINT width, UINT height)
     return true;
 }
 
+void RenderingSystem::BeginFrame(ID3D12Resource* backBuffer)
+{
+    ThrowIfFailed(mCommandAllocator->Reset());
+    ThrowIfFailed(mCommandList->Reset(mCommandAllocator, nullptr));
+
+    const D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        backBuffer,
+        D3D12_RESOURCE_STATE_PRESENT,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    mCommandList->ResourceBarrier(1, &barrier);
+}
+
+void RenderingSystem::EndFrame(ID3D12Resource* backBuffer)
+{
+    const D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        backBuffer,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PRESENT);
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    ThrowIfFailed(mCommandList->Close());
+    ID3D12CommandList* commandLists[] = { mCommandList };
+    mCommandQueue->ExecuteCommandLists(1, commandLists);
+}
+
 bool RenderingSystem::CreateGBuffer(UINT width, UINT height)
 {
     mGBuffer = std::make_unique<GBuffer>();
@@ -261,7 +286,7 @@ bool RenderingSystem::CreateLightingResources()
 
     mLightingCB = std::make_unique<UploadBuffer<LightConstants>>(
         mDevice,
-        10,  // Максимум источников
+        MaxLightsPerView * ViewCount,
         true);
 
     return true;
@@ -272,6 +297,7 @@ void RenderingSystem::GeometryPass(
     ID3D12RootSignature* rootSignature,
     ID3D12DescriptorHeap* cbvSrvHeap,
     UINT cbvSrvDescriptorSize,
+    D3D12_GPU_VIRTUAL_ADDRESS objectConstantsAddress,
     const std::vector<Submesh>& submeshes,
     const std::vector<Material>& materials,
     const std::vector<uint32_t>& visibleSubmeshIndices,
@@ -283,12 +309,12 @@ void RenderingSystem::GeometryPass(
     ID3D12Resource* depthStencilBuffer,
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle,
     const D3D12_VIEWPORT& viewport,
-    const D3D12_RECT& scissorRect)
+    const D3D12_RECT& scissorRect,
+    bool updateStats)
 {
     if (!mGBuffer) return;
 
-    mCommandAllocator->Reset();
-    mCommandList->Reset(mCommandAllocator, pso);
+    mCommandList->SetPipelineState(pso);
 
     // Переводим G-буфер текстуры в состояние RENDER_TARGET
     D3D12_RESOURCE_BARRIER barriers[GBuffer::GBUFFER_COUNT];
@@ -325,20 +351,20 @@ void RenderingSystem::GeometryPass(
     mCommandList->SetGraphicsRootSignature(rootSignature);
     ID3D12DescriptorHeap* heaps[] = { cbvSrvHeap };
     mCommandList->SetDescriptorHeaps(1, heaps);
-    mCommandList->SetGraphicsRootDescriptorTable(0, cbvSrvHeap->GetGPUDescriptorHandleForHeapStart());
+    mCommandList->SetGraphicsRootConstantBufferView(0, objectConstantsAddress);
 
     mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
     mCommandList->IASetVertexBuffers(0, 1, &vertexBufferView);
     mCommandList->IASetIndexBuffer(&indexBufferView);
 
-    mGeometryPassStats = {};
-    mGeometryPassStats.TotalSubmeshes = traversalStats.TotalSubmeshes;
-    mGeometryPassStats.BoundedSubmeshes = traversalStats.BoundedSubmeshes;
-    mGeometryPassStats.UnboundedSubmeshes = traversalStats.UnboundedSubmeshes;
-    mGeometryPassStats.CandidateSubmeshes = traversalStats.CandidateSubmeshes;
-    mGeometryPassStats.CulledSubmeshes = traversalStats.CulledSubmeshes;
-    mGeometryPassStats.NodesTested = traversalStats.NodesTested;
-    mGeometryPassStats.NodesRejected = traversalStats.NodesRejected;
+    GeometryPassStats passStats = {};
+    passStats.TotalSubmeshes = traversalStats.TotalSubmeshes;
+    passStats.BoundedSubmeshes = traversalStats.BoundedSubmeshes;
+    passStats.UnboundedSubmeshes = traversalStats.UnboundedSubmeshes;
+    passStats.CandidateSubmeshes = traversalStats.CandidateSubmeshes;
+    passStats.CulledSubmeshes = traversalStats.CulledSubmeshes;
+    passStats.NodesTested = traversalStats.NodesTested;
+    passStats.NodesRejected = traversalStats.NodesRejected;
     for (const uint32_t submeshIndex : visibleSubmeshIndices)
     {
         if (submeshIndex >= submeshes.size())
@@ -358,7 +384,7 @@ void RenderingSystem::GeometryPass(
 
         if (!mat)
         {
-            mGeometryPassStats.MissingMaterials++;
+            passStats.MissingMaterials++;
             continue;
         }
 
@@ -385,8 +411,8 @@ void RenderingSystem::GeometryPass(
         mCommandList->SetGraphicsRoot32BitConstant(4, *reinterpret_cast<const UINT*>(&isFlag), 0);
 
         mCommandList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
-        mGeometryPassStats.DrawnSubmeshes++;
-        mGeometryPassStats.SubmittedIndices += sm.IndexCount;
+        passStats.DrawnSubmeshes++;
+        passStats.SubmittedIndices += sm.IndexCount;
     }
 
     // Переводим G-буфер текстуры обратно в PIXEL_SHADER_RESOURCE
@@ -406,41 +432,32 @@ void RenderingSystem::GeometryPass(
         D3D12_RESOURCE_STATE_DEPTH_READ);
     mCommandList->ResourceBarrier(1, &depthBarrier);
 
-    mCommandList->Close();
-
-    ID3D12CommandList* cmdLists[] = { mCommandList };
-    mCommandQueue->ExecuteCommandLists(1, cmdLists);
+    if (updateStats)
+        mGeometryPassStats = passStats;
 }
 
 void RenderingSystem::LightingPass(
-    ID3D12Resource* backBuffer,
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
     const std::vector<Light>& lights,
     const DirectX::XMFLOAT3& cameraPos,
     const D3D12_VIEWPORT& viewport,
     const D3D12_RECT& scissorRect,
-    int& currBackBufferIndex,
-    IDXGISwapChain* swapChain,
+    UINT viewIndex,
+    D3D12_GPU_VIRTUAL_ADDRESS cameraConstantsAddress,
     ID3D12PipelineState* lightingPSO,
     ID3D12RootSignature* lightingRootSignature,
-    UploadBuffer<LightConstants>* lightingCB,
-    UploadBuffer<CameraConstants>* cameraCB,
     GBuffer* gBuffer)
 {
-    mCommandAllocator->Reset();
-    mCommandList->Reset(mCommandAllocator, lightingPSO);
+    if (!mLightingCB || viewIndex >= ViewCount)
+        return;
 
-    D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        backBuffer,
-        D3D12_RESOURCE_STATE_PRESENT,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
-    mCommandList->ResourceBarrier(1, &barrier);
+    mCommandList->SetPipelineState(lightingPSO);
 
     mCommandList->RSSetViewports(1, &viewport);
     mCommandList->RSSetScissorRects(1, &scissorRect);
 
     const float clearColor[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+    mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 1, &scissorRect);
 
     mCommandList->OMSetRenderTargets(1, &rtvHandle, true, nullptr);
 
@@ -449,55 +466,56 @@ void RenderingSystem::LightingPass(
     mCommandList->SetDescriptorHeaps(1, heaps);
     mCommandList->SetGraphicsRootDescriptorTable(0, gBuffer->mSrvHeap->GetGPUDescriptorHandleForHeapStart());
 
-    D3D12_GPU_VIRTUAL_ADDRESS cameraAddr = cameraCB->Resource()->GetGPUVirtualAddress();
-    mCommandList->SetGraphicsRootConstantBufferView(2, cameraAddr);
-
-    D3D12_GPU_VIRTUAL_ADDRESS baseAddr = lightingCB->Resource()->GetGPUVirtualAddress();
-    UINT elementSize = lightingCB->GetElementSize();
-
-    if (cameraCB)
-    {
-        D3D12_GPU_VIRTUAL_ADDRESS cameraAddr = cameraCB->Resource()->GetGPUVirtualAddress();
-        mCommandList->SetGraphicsRootConstantBufferView(2, cameraAddr);
-    }
+    mCommandList->SetGraphicsRootConstantBufferView(2, cameraConstantsAddress);
 
     mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     mCommandList->IASetVertexBuffers(0, 0, nullptr);  // Нет вершинных буферов
     mCommandList->IASetIndexBuffer(nullptr);
 
-    if (lightingCB)
+    const D3D12_GPU_VIRTUAL_ADDRESS baseAddress = mLightingCB->Resource()->GetGPUVirtualAddress();
+    const UINT elementSize = mLightingCB->GetElementSize();
+    const UINT firstLightIndex = viewIndex * MaxLightsPerView;
+    const size_t lightCount = (std::min)(lights.size(), static_cast<size_t>(MaxLightsPerView));
+    for (size_t i = 0; i < lightCount; ++i)
     {
-        D3D12_GPU_VIRTUAL_ADDRESS baseAddr = lightingCB->Resource()->GetGPUVirtualAddress();
-        UINT elementSize = lightingCB->GetElementSize();
+        const UINT lightIndex = firstLightIndex + static_cast<UINT>(i);
+        LightConstants lightConstants;
+        lightConstants.SetFromLight(lights[i], cameraPos);
+        mLightingCB->CopyData(lightIndex, lightConstants);
 
-        for (size_t i = 0; i < lights.size(); ++i)
-        {
-            LightConstants lightConstants;
-            lightConstants.SetFromLight(lights[i], cameraPos);
-            lightingCB->CopyData((UINT)i, lightConstants);
+        // Root Parameter 1: CBV для текущего света (b0)
+        const D3D12_GPU_VIRTUAL_ADDRESS cbAddress =
+            baseAddress + static_cast<UINT64>(lightIndex) * elementSize;
+        mCommandList->SetGraphicsRootConstantBufferView(1, cbAddress);
 
-            // Root Parameter 1: CBV для текущего света (b0)
-            D3D12_GPU_VIRTUAL_ADDRESS cbAddr = baseAddr + i * elementSize;
-            mCommandList->SetGraphicsRootConstantBufferView(1, cbAddr);
-
-            // Рисуем полноэкранный треугольник (3 вершины)
-            mCommandList->DrawInstanced(3, 1, 0, 0);
-        }
+        // Рисуем полноэкранный треугольник (3 вершины)
+        mCommandList->DrawInstanced(3, 1, 0, 0);
     }
+}
 
-    barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        backBuffer,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PRESENT);
-    mCommandList->ResourceBarrier(1, &barrier);
+void RenderingSystem::DebugFrustumPass(
+    ID3D12PipelineState* pso,
+    ID3D12RootSignature* rootSignature,
+    D3D12_GPU_VIRTUAL_ADDRESS objectConstantsAddress,
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
+    const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
+    UINT vertexCount,
+    const D3D12_VIEWPORT& viewport,
+    const D3D12_RECT& scissorRect)
+{
+    if (!pso || !rootSignature || vertexCount == 0)
+        return;
 
-    mCommandList->Close();
-
-    ID3D12CommandList* cmdLists[] = { mCommandList };
-    mCommandQueue->ExecuteCommandLists(1, cmdLists);
-
-    swapChain->Present(0, 0);
-    currBackBufferIndex = (currBackBufferIndex + 1) % mSwapChainBufferCount;
+    mCommandList->SetPipelineState(pso);
+    mCommandList->RSSetViewports(1, &viewport);
+    mCommandList->RSSetScissorRects(1, &scissorRect);
+    mCommandList->OMSetRenderTargets(1, &rtvHandle, true, nullptr);
+    mCommandList->SetGraphicsRootSignature(rootSignature);
+    mCommandList->SetGraphicsRootConstantBufferView(0, objectConstantsAddress);
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    mCommandList->IASetVertexBuffers(0, 1, &vertexBufferView);
+    mCommandList->IASetIndexBuffer(nullptr);
+    mCommandList->DrawInstanced(vertexCount, 1, 0, 0);
 }
 
 void RenderingSystem::Shutdown()

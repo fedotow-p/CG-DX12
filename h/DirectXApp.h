@@ -94,6 +94,9 @@ private:
     void BuildSubmeshBounds();
     void RebuildSpatialIndex();
     void BuildVisibleSubmeshList();
+    void BuildOverviewCamera();
+    void BuildFrustumDebugResources();
+    void UpdateFrustumVertices(DirectX::FXMMATRIX inverseViewProjection);
 
 
     std::vector<Light> mLights;
@@ -178,6 +181,11 @@ private:
 
     std::unique_ptr<UploadBuffer<CameraConstants>> mCameraCB;
 
+    static constexpr UINT MainViewIndex = 0;
+    static constexpr UINT OverviewViewIndex = 1;
+    static constexpr UINT CameraViewCount = 2;
+    static constexpr UINT FrustumVertexCount = 24;
+
     // ScreenSize
     int mClientWidth = 800;
     int mClientHeight = 600;
@@ -185,6 +193,8 @@ private:
     // Viewport и Scissor
     D3D12_VIEWPORT mScreenViewport;
     D3D12_RECT mScissorRect;
+    D3D12_VIEWPORT mOverviewViewport;
+    D3D12_RECT mOverviewScissorRect;
 
     // Timer and State
     Timer mTimer;
@@ -208,6 +218,8 @@ private:
     Microsoft::WRL::ComPtr<ID3DBlob> mhsByteCode = nullptr;
     Microsoft::WRL::ComPtr<ID3DBlob> mdsByteCode = nullptr;
     Microsoft::WRL::ComPtr<ID3DBlob> mpsByteCode = nullptr;
+    Microsoft::WRL::ComPtr<ID3DBlob> mDebugVsByteCode = nullptr;
+    Microsoft::WRL::ComPtr<ID3DBlob> mDebugPsByteCode = nullptr;
 
     // =========== Constant Buffer ===========
     std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
@@ -215,6 +227,9 @@ private:
     // =========== Root Signature и PSO ===========
     Microsoft::WRL::ComPtr<ID3D12RootSignature> mRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> mPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> mFrustumPSO;
+    std::unique_ptr<UploadBuffer<DirectX::XMFLOAT3>> mFrustumVertexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW mFrustumVertexBufferView = {};
 
     // Математика для камеры
     float mTheta = 1.5f * XM_PI;
@@ -224,6 +239,9 @@ private:
     XMFLOAT4X4 mWorld = MathHelper::Identity4x4();
     XMFLOAT4X4 mView = MathHelper::Identity4x4();
     XMFLOAT4X4 mProj = MathHelper::Identity4x4();
+    XMFLOAT3 mOverviewEyePos = XMFLOAT3(0.0f, 100.0f, 0.0f);
+    XMFLOAT4X4 mOverviewView = MathHelper::Identity4x4();
+    XMFLOAT4X4 mOverviewProj = MathHelper::Identity4x4();
 
     UINT mIndexCount;
 

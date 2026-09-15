@@ -192,3 +192,25 @@ PSOutput PS(DSOutput pin)
 
     return pout;
 }
+
+struct DebugVSInput
+{
+    float3 Pos : POSITION;
+};
+
+struct DebugVSOutput
+{
+    float4 PosH : SV_POSITION;
+};
+
+DebugVSOutput DebugVS(DebugVSInput vin)
+{
+    DebugVSOutput vout;
+    vout.PosH = mul(float4(vin.Pos, 1.0f), mWorldViewProj);
+    return vout;
+}
+
+float4 DebugPS(DebugVSOutput pin) : SV_Target
+{
+    return float4(1.0f, 0.9f, 0.1f, 1.0f);
+}

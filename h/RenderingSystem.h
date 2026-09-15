@@ -47,11 +47,15 @@ public:
 
     bool Initialize(UINT width, UINT height);
 
+    void BeginFrame(ID3D12Resource* backBuffer);
+    void EndFrame(ID3D12Resource* backBuffer);
+
     void GeometryPass(
         ID3D12PipelineState* pso,
         ID3D12RootSignature* rootSignature,
         ID3D12DescriptorHeap* cbvSrvHeap,
         UINT cbvSrvDescriptorSize,
+        D3D12_GPU_VIRTUAL_ADDRESS objectConstantsAddress,
         const std::vector<Submesh>& submeshes,
         const std::vector<Material>& materials,
         const std::vector<uint32_t>& visibleSubmeshIndices,
@@ -63,22 +67,30 @@ public:
         ID3D12Resource* depthStencilBuffer,
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle,
         const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect);
+        const D3D12_RECT& scissorRect,
+        bool updateStats);
 
     void LightingPass(
-        ID3D12Resource* backBuffer,
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
         const std::vector<Light>& lights,
         const DirectX::XMFLOAT3& cameraPos,
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
-        int& currBackBufferIndex,
-        IDXGISwapChain* swapChain,
+        UINT viewIndex,
+        D3D12_GPU_VIRTUAL_ADDRESS cameraConstantsAddress,
         ID3D12PipelineState* lightingPSO,
         ID3D12RootSignature* lightingRootSignature,
-        UploadBuffer<LightConstants>* lightingCB,
-        UploadBuffer<CameraConstants>* cameraCB,
         GBuffer* gBuffer);
+
+    void DebugFrustumPass(
+        ID3D12PipelineState* pso,
+        ID3D12RootSignature* rootSignature,
+        D3D12_GPU_VIRTUAL_ADDRESS objectConstantsAddress,
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
+        const D3D12_VERTEX_BUFFER_VIEW& vertexBufferView,
+        UINT vertexCount,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect);
 
     void Shutdown();
     void FlushCommandQueue();
@@ -90,6 +102,9 @@ public:
     const GeometryPassStats& GetGeometryPassStats() const { return mGeometryPassStats; }
 
 private:
+    static constexpr UINT MaxLightsPerView = 10;
+    static constexpr UINT ViewCount = 2;
+
     std::vector<Light> mLights;
     GeometryPassStats mGeometryPassStats;
     bool CreateGBuffer(UINT width, UINT height);
