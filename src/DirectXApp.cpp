@@ -608,7 +608,7 @@ void DirectXApp::BuildVisibleShadowSubmeshLists()
 
 void DirectXApp::UpdateCascadeConstants(const XMMATRIX& viewProj, const XMFLOAT3& lightDirection)
 {
-    constexpr float cameraNear = 0.1f, cameraFar = 1000.0f, shadowDistance = 30.0f, splitLambda = 0.0f;
+    constexpr float cameraNear = 0.1f, cameraFar = 1000.0f, shadowDistance = 150.0f, splitLambda = 0.5f;
     std::array<float, CameraConstants::CascadeCount> splits = {};
     for (UINT i = 0; i < CameraConstants::CascadeCount; ++i)
     {

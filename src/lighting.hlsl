@@ -143,13 +143,23 @@ float4 PS(PSInput pin) : SV_Target
 
     if (mVisualizeCascades != 0)
         {
-            if (gLightType == LIGHT_AMBIENT)
+            if (gLightType == LIGHT_DIRECTIONAL)
             {
-                uint cascadeIndex = GetCascadeIndex(worldPos);
-                float3 debugColor = GetCascadeColor(cascadeIndex);
+                float3 lightDir = normalize(-gLightDir);
+                float diff = max(dot(normal, lightDir), 0.0f);
+                float shadowFactor = GetShadowFactor(worldPos);
 
-                return float4(debugColor * (albedo.rgb * 0.4 + 0.6), 1.0f);
+                if (shadowFactor < 0.999f)
+                {
+                    uint cascadeIndex = GetCascadeIndex(worldPos);
+                    float3 debugColor = GetCascadeColor(cascadeIndex);
+
+                    return float4(debugColor * (diff * 0.7f + 0.3f), 1.0f);
+                }
+
+                return float4(diff * gLightColor * gLightIntensity * albedo.rgb, 1.0f);
             }
+    
             return float4(0.0f, 0.0f, 0.0f, 0.0f);
         }
 
