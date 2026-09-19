@@ -62,6 +62,10 @@ DirectXApp::DirectXApp(Window& window) : window(window)
     XMStoreFloat4x4(&mWorld, XMMatrixIdentity());
     XMStoreFloat4x4(&mView, XMMatrixIdentity());
     XMStoreFloat4x4(&mProj, XMMatrixIdentity());
+    // Start with the suspended cube and its projected shadow in frame.
+    mEyePos = XMFLOAT3(-16.0f, 10.0f, -16.0f);
+    mYaw = XM_PIDIV4;
+    mPitch = -0.42f;
     mRenderingSystem = nullptr;
 }
 
@@ -430,6 +434,60 @@ void DirectXApp::BuildObj(const std::string& path)
     UploadSceneGeometryBuffers();
 }
 
+// Builds a compact scene intended to make the cascaded directional shadow easy
+// to inspect: a wide receiver plane and one large suspended cube.
+void DirectXApp::BuildShadowDemoScene()
+{
+    mSceneVertices.clear();
+    mSceneIndices.clear();
+    mSubmeshes.clear();
+
+    const Vertex planeVertices[] =
+    {
+        { {-30.0f, 0.0f, -30.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f} },
+        { {-30.0f, 0.0f,  30.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 8.0f} },
+        { { 30.0f, 0.0f,  30.0f}, {0.0f, 1.0f, 0.0f}, {8.0f, 8.0f} },
+        { { 30.0f, 0.0f, -30.0f}, {0.0f, 1.0f, 0.0f}, {8.0f, 0.0f} },
+    };
+    const uint32_t planeIndices[] = { 0, 1, 2, 0, 2, 3 };
+
+    mSceneVertices.insert(mSceneVertices.end(), std::begin(planeVertices), std::end(planeVertices));
+    mSceneIndices.insert(mSceneIndices.end(), std::begin(planeIndices), std::end(planeIndices));
+    mSubmeshes.push_back({ 0, static_cast<uint32_t>(std::size(planeIndices)), "Ground" });
+
+    // Unique vertices per face preserve the cube's hard edges. The cube spans
+    // y = 3..9, leaving enough room for a long, clear shadow on the plane.
+    const Vertex cubeVertices[] =
+    {
+        { {-3,3,-3}, {0,0,-1}, {0,1} }, { {-3,9,-3}, {0,0,-1}, {0,0} },
+        { { 3,9,-3}, {0,0,-1}, {1,0} }, { { 3,3,-3}, {0,0,-1}, {1,1} },
+        { {-3,3, 3}, {0,0, 1}, {1,1} }, { { 3,3, 3}, {0,0, 1}, {0,1} },
+        { { 3,9, 3}, {0,0, 1}, {0,0} }, { {-3,9, 3}, {0,0, 1}, {1,0} },
+        { {-3,9,-3}, {0,1,0}, {0,1} }, { {-3,9, 3}, {0,1,0}, {0,0} },
+        { { 3,9, 3}, {0,1,0}, {1,0} }, { { 3,9,-3}, {0,1,0}, {1,1} },
+        { {-3,3, 3}, {0,-1,0}, {1,1} }, { { 3,3, 3}, {0,-1,0}, {0,1} },
+        { { 3,3,-3}, {0,-1,0}, {0,0} }, { {-3,3,-3}, {0,-1,0}, {1,0} },
+        { {-3,3, 3}, {-1,0,0}, {0,1} }, { {-3,9, 3}, {-1,0,0}, {0,0} },
+        { {-3,9,-3}, {-1,0,0}, {1,0} }, { {-3,3,-3}, {-1,0,0}, {1,1} },
+        { { 3,3,-3}, {1,0,0}, {0,1} }, { { 3,9,-3}, {1,0,0}, {0,0} },
+        { { 3,9, 3}, {1,0,0}, {1,0} }, { { 3,3, 3}, {1,0,0}, {1,1} },
+    };
+    const uint32_t cubeIndices[] =
+    {
+        0,1,2, 0,2,3, 4,5,6, 4,6,7, 8,9,10, 8,10,11,
+        12,13,14, 12,14,15, 16,17,18, 16,18,19, 20,21,22, 20,22,23,
+    };
+    const uint32_t cubeVertexOffset = static_cast<uint32_t>(mSceneVertices.size());
+    const uint32_t cubeIndexOffset = static_cast<uint32_t>(mSceneIndices.size());
+    mSceneVertices.insert(mSceneVertices.end(), std::begin(cubeVertices), std::end(cubeVertices));
+    for (uint32_t index : cubeIndices)
+        mSceneIndices.push_back(cubeVertexOffset + index);
+    mSubmeshes.push_back({ cubeIndexOffset, static_cast<uint32_t>(std::size(cubeIndices)), "Cube" });
+
+    RebuildSpatialIndex();
+    UploadSceneGeometryBuffers();
+}
+
 void DirectXApp::BuildSubmeshBounds()
 {
     constexpr float kBoundsPadding = 0.2f;
@@ -539,23 +597,18 @@ void DirectXApp::BuildVisibleShadowSubmeshLists()
     for (UINT cascade = 0; cascade < CameraConstants::CascadeCount; ++cascade)
     {
         auto& visible = mVisibleShadowSubmeshIndices[cascade];
-        if (mSpatialCullingEnabled)
-        {
-            const XMMATRIX lightViewProj = XMMatrixTranspose(XMLoadFloat4x4(&mCameraConstants.mCascadeViewProj[cascade]));
-            OctreeTraversalStats ignoredStats;
-            mSubmeshOctree.GatherVisible(Frustum::FromViewProjection(lightViewProj), visible, ignoredStats);
-        }
-        else
-        {
-            visible.resize(mSubmeshes.size());
-            std::iota(visible.begin(), visible.end(), 0u);
-        }
+        // A shadow frustum needs both the receiver and casters. Culling only
+        // against its fitted camera slice can remove a suspended caster before
+        // it projects onto the visible ground. The demo has just two meshes,
+        // so drawing both into every cascade is safer and effectively free.
+        visible.resize(mSubmeshes.size());
+        std::iota(visible.begin(), visible.end(), 0u);
     }
 }
 
 void DirectXApp::UpdateCascadeConstants(const XMMATRIX& viewProj, const XMFLOAT3& lightDirection)
 {
-    constexpr float cameraNear = 0.1f, cameraFar = 1000.0f, shadowDistance = 150.0f, splitLambda = 0.85f;
+    constexpr float cameraNear = 0.1f, cameraFar = 1000.0f, shadowDistance = 30.0f, splitLambda = 0.0f;
     std::array<float, CameraConstants::CascadeCount> splits = {};
     for (UINT i = 0; i < CameraConstants::CascadeCount; ++i)
     {
@@ -597,7 +650,9 @@ void DirectXApp::UpdateCascadeConstants(const XMMATRIX& viewProj, const XMFLOAT3
             minPoint = XMVectorMin(minPoint, point);
             maxPoint = XMVectorMax(maxPoint, point);
         }
-        constexpr float padding = 4.0f;
+        // Include casters just outside the camera slice as well as the slice
+        // itself, so tall objects can still cast onto the receiver.
+        constexpr float padding = 12.0f;
         const float nearPlane = max(0.1f, XMVectorGetZ(minPoint) - 50.0f);
         const float farPlane = XMVectorGetZ(maxPoint) + 50.0f;
         XMStoreFloat4x4(&mCameraConstants.mCascadeViewProj[cascade], XMMatrixTranspose(lightView *
@@ -1174,160 +1229,32 @@ bool DirectXApp::Initialize() {
 
     //Геометрия и ресурсы
     BuildInputLayout();
-    const std::string scenePath = "../assets/Earth.fbx";
-    std::vector<ParsedMaterial> parsed;
-
-    const std::string loweredScenePath = [&scenePath]()
-    {
-        std::string value = scenePath;
-        std::transform(value.begin(), value.end(), value.begin(),
-            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-        return value;
-    }();
-
-    const bool isFbxScene =
-        loweredScenePath.size() >= 4
-        && loweredScenePath.substr(loweredScenePath.size() - 4) == ".fbx";
-
-    if (isFbxScene)
-    {
-        if (!LoadFBX(scenePath, mSceneVertices, mSceneIndices, mSubmeshes, parsed))
-        {
-            MessageBoxA(nullptr, "Failed to load FBX scene", "Error", MB_OK);
-            return false;
-        }
-
-        BuildObj(scenePath);
-    }
-    else
-    {
-        BuildObj(scenePath);
-        std::filesystem::path mtlPath(scenePath);
-        mtlPath.replace_extension(".mtl");
-        LoadMTL(mtlPath.string(), parsed);
-    }
-
+    BuildShadowDemoScene();
     mMaterials.clear();
 
     UINT srvIndex = 0;
-    const std::string earthAlbedo = "../assets/textures/earth/Earth_ALB.dds";
-    const std::string earthNormal = "../assets/textures/earth/Earth_NORM.dds";
-    const std::string earthHeight = "../assets/textures/earth/Earth_HEIGHT.dds";
-
-    for (auto& p : parsed)
+    const auto addSolidMaterial = [&](const char* name, const XMFLOAT3& color)
     {
-        Material mat;
-        mat.Name = p.Name;
-        mat.DiffuseMap = p.DiffuseMap;
-        const std::string loweredMaterialName = ToLowerCopy(mat.Name);
-        const bool isEarthMaterial =
-            loweredScenePath.find("earth") != std::string::npos
-            || loweredMaterialName.find("earth") != std::string::npos;
+        Material material;
+        material.Name = name;
+        material.DiffuseSrvHeapIndex = srvIndex++;
+        material.NormalSrvHeapIndex = srvIndex++;
+        material.HeightSrvHeapIndex = srvIndex++;
 
-        if (mat.DiffuseMap.empty() && isEarthMaterial)
-        {
-            mat.DiffuseMap = earthAlbedo;
-        }
-
-        if (isEarthMaterial)
-        {
-            mat.NormalMap = earthNormal;
-            mat.HeightMap = earthHeight;
-            mat.EnableTessellation = true;
-        }
-
-        mat.DiffuseSrvHeapIndex = srvIndex++;
-        mat.NormalSrvHeapIndex = srvIndex++;
-        mat.HeightSrvHeapIndex = srvIndex++;
-
-        if (!mat.DiffuseMap.empty())
-        {
-            CreateTextureFromFile(
-                mat.DiffuseMap,
-                mat.DiffuseTexture,
-                mat.TextureFormat);
-        }
-        else
-        {
-            CreateColorTexture(p.Kd, mat.DiffuseTexture);
-            mat.TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-        }
-
-        if (!mat.NormalMap.empty())
-        {
-            CreateTextureFromFile(mat.NormalMap, mat.NormalTexture, mat.NormalFormat);
-        }
-        else
-        {
-            CreateColorTexture({ 0.5f, 0.5f, 1.0f }, mat.NormalTexture);
-            mat.NormalFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-        }
-
-        if (!mat.HeightMap.empty())
-        {
-            CreateTextureFromFile(mat.HeightMap, mat.HeightTexture, mat.HeightFormat);
-        }
-        else
-        {
-            CreateColorTexture({ 0.5f, 0.5f, 0.5f }, mat.HeightTexture);
-            mat.HeightFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-        }
-
-        CreateTextureSrv(
-            device.Get(),
-            mCbvHeap.Get(),
-            mCbvSrvUavDescriptorSize,
-            1 + mat.DiffuseSrvHeapIndex,
-            mat.DiffuseTexture.Get(),
-            mat.TextureFormat);
-        CreateTextureSrv(
-            device.Get(),
-            mCbvHeap.Get(),
-            mCbvSrvUavDescriptorSize,
-            1 + mat.NormalSrvHeapIndex,
-            mat.NormalTexture.Get(),
-            mat.NormalFormat);
-        CreateTextureSrv(
-            device.Get(),
-            mCbvHeap.Get(),
-            mCbvSrvUavDescriptorSize,
-            1 + mat.HeightSrvHeapIndex,
-            mat.HeightTexture.Get(),
-            mat.HeightFormat);
-
-        mMaterials.push_back(mat);
-    }
-
-    // ==== Procedurally scatter 1000 random cubes around the scene ====
-    {
-        Material cubeMat;
-        cubeMat.Name = "RandomCubes";
-        cubeMat.DiffuseSrvHeapIndex = srvIndex++;
-        cubeMat.NormalSrvHeapIndex = srvIndex++;
-        cubeMat.HeightSrvHeapIndex = srvIndex++;
-
-        CreateColorTexture({ 0.85f, 0.25f, 0.2f }, cubeMat.DiffuseTexture);
-        cubeMat.TextureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-
-        CreateColorTexture({ 0.5f, 0.5f, 1.0f }, cubeMat.NormalTexture);
-        cubeMat.NormalFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-
-        CreateColorTexture({ 0.5f, 0.5f, 0.5f }, cubeMat.HeightTexture);
-        cubeMat.HeightFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        CreateColorTexture(color, material.DiffuseTexture);
+        CreateColorTexture({ 0.5f, 0.5f, 1.0f }, material.NormalTexture);
+        CreateColorTexture({ 0.5f, 0.5f, 0.5f }, material.HeightTexture);
 
         CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
-            1 + cubeMat.DiffuseSrvHeapIndex, cubeMat.DiffuseTexture.Get(), cubeMat.TextureFormat);
+            1 + material.DiffuseSrvHeapIndex, material.DiffuseTexture.Get(), material.TextureFormat);
         CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
-            1 + cubeMat.NormalSrvHeapIndex, cubeMat.NormalTexture.Get(), cubeMat.NormalFormat);
+            1 + material.NormalSrvHeapIndex, material.NormalTexture.Get(), material.NormalFormat);
         CreateTextureSrv(device.Get(), mCbvHeap.Get(), mCbvSrvUavDescriptorSize,
-            1 + cubeMat.HeightSrvHeapIndex, cubeMat.HeightTexture.Get(), cubeMat.HeightFormat);
-
-        mMaterials.push_back(cubeMat);
-
-        BuildRandomCubes(200000);
-        RebuildSpatialIndex();
-        UploadSceneGeometryBuffers();
-    }
+            1 + material.HeightSrvHeapIndex, material.HeightTexture.Get(), material.HeightFormat);
+        mMaterials.push_back(std::move(material));
+    };
+    addSolidMaterial("Ground", { 0.48f, 0.52f, 0.46f });
+    addSolidMaterial("Cube", { 0.82f, 0.23f, 0.12f });
 
     BuildRootSignature();
     BuildShaders();
@@ -1341,45 +1268,15 @@ bool DirectXApp::Initialize() {
 
     mLights.clear();
 
-    // 1. Ambient
-    mLights.push_back(Light::CreateAmbientLight(XMFLOAT3(0.15f, 0.12f, 0.10f)));
-
+    // Keep fill light low so the directional light's cascaded shadow remains
+    // legible across the ground plane.
+    mLights.push_back(Light::CreateAmbientLight(XMFLOAT3(0.26f, 0.26f, 0.37f)));
     mLights.push_back(Light::CreateDirectionalLight(
-    XMFLOAT3(0.8f, -1.0f, 0.4f),
-    XMFLOAT3(1.0f, 0.92f, 0.85f),
-    1.2f));
-
-    mLights.push_back(Light::CreatePointLight(
-    XMFLOAT3(0.0f, 1.5f, 0.0f),
-    XMFLOAT3(1.0f, 0.7f, 0.3f),
-    2.5f,
-    8.0f));
-
-    mLights.push_back(Light::CreatePointLight(
-    XMFLOAT3(-4.0f, 2.0f, 2.0f),
-    XMFLOAT3(0.3f, 0.5f, 1.0f),
-    2.0f,
-    10.0f));
-
-    mLights.push_back(Light::CreatePointLight(
-    XMFLOAT3(4.0f, 1.5f, -1.0f),
-    XMFLOAT3(1.0f, 0.5f, 0.2f),
-    2.0f,
-    9.0f));
-
-    mLights.push_back(Light::CreateSpotLight(
-    XMFLOAT3(0.0f, 5.0f, -5.0f),
-    XMFLOAT3(0.0f, -0.8f, 0.5f),
-    XMFLOAT3(1.0f, 0.9f, 0.7f),
-    3.0f,
-    15.0f,
-    60));
-
-    mLights.push_back(Light::CreatePointLight(
-    XMFLOAT3(2.0f, 4.0f, 3.0f),
-    XMFLOAT3(0.8f, 0.8f, 1.0f),
-    1.5f,
-    12.0f));
+        // Rays travel diagonally away from the camera, so the cube's shadow
+        // lands on the visible, far side of the receiver plane.
+        XMFLOAT3(1.4f, -0.55f, 0.9f),
+        XMFLOAT3(1.0f, 0.95f, 0.86f),
+        1.35f));
 
     mLightingCB = std::make_unique<UploadBuffer<LightConstants>>(
         device.Get(),
@@ -2143,7 +2040,10 @@ void DirectXApp::CreateColorTexture(
     UINT g = (UINT)(color.y * 255.0f);
     UINT b = (UINT)(color.z * 255.0f);
 
-    UINT pixel = (255 << 24) | (b << 16) | (g << 8) | r;
+    // DXGI_FORMAT_B8G8R8A8_UNORM stores bytes as B, G, R, A.  Packing the
+    // colour as RGBA turns the flat normal (0.5, 0.5, 1.0) into a sideways
+    // one when sampled, leaving upward-facing receivers unlit.
+    UINT pixel = (255 << 24) | (r << 16) | (g << 8) | b;
 
     // ---- TEXTURE (DEFAULT heap) ----
     D3D12_RESOURCE_DESC texDesc = {};

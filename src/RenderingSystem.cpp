@@ -405,7 +405,7 @@ void RenderingSystem::ShadowPass(const std::vector<Submesh>& submeshes,
     for (UINT cascade = 0; cascade < CameraConstants::CascadeCount; ++cascade)
     {
         ObjectConstants constants;
-        constants.mWorldViewProj = cameraConstants.mCascadeViewProj[cascade];
+        constants.mWorld = cameraConstants.mCascadeViewProj[cascade];
         mShadowCB->CopyData(cascade, constants);
         auto dsv = mShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
         dsv.ptr += cascade * mDsvDescriptorSize;
