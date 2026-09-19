@@ -12,6 +12,9 @@ struct CameraConstants
     DirectX::XMFLOAT2 mScreenSize;
     DirectX::XMFLOAT2 mPadding;
     DirectX::XMFLOAT4 mCascadeSplits;
+
+    UINT mVisualizeCascades = 0;
+    DirectX::XMFLOAT3 mPadding2;
     
     CameraConstants()
     {
@@ -22,5 +25,8 @@ struct CameraConstants
         mScreenSize = DirectX::XMFLOAT2(800.0f, 600.0f);
         mPadding = DirectX::XMFLOAT2(0.0f, 0.0f);
         mCascadeSplits = DirectX::XMFLOAT4(10.0f, 30.0f, 70.0f, 150.0f);
+
+        mVisualizeCascades = 0;
+        mPadding2 = {0.0f, 0.0f, 0.0f};
     }
 };

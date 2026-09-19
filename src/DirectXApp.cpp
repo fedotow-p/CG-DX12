@@ -1369,6 +1369,13 @@ void DirectXApp::OnKeyDown(WPARAM wParam, LPARAM lParam)
     if (wParam == 'F') {
         mPendingLightProjectileSpawn = true;
     }
+
+    if (wParam == 'V') {
+        static bool visualize = false;
+        visualize = !visualize;
+        mCameraConstants.mVisualizeCascades = visualize ? 1 : 0;
+        OutputDebugStringA(visualize ? "Cascade visualization: ON\n" : "Cascade visualization: OFF\n");
+    }
 }
 
 int DirectXApp::Run() {

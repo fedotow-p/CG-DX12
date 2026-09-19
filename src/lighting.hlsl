@@ -29,6 +29,8 @@ cbuffer cbCamera : register(b1)
     float2 mScreenSize;
     float2 padding2;
     float4 mCascadeSplits;
+    uint mVisualizeCascades;
+        float3 padding3;
 };
 
 
@@ -97,6 +99,26 @@ float GetShadowFactor(float3 worldPos)
     return visibility / 9.0f;
 }
 
+uint GetCascadeIndex(float3 worldPos)
+{
+    float viewDepth = abs(mul(float4(worldPos, 1.0f), mView).z);
+    uint cascadeIndex = viewDepth <= mCascadeSplits.x ? 0 :
+                        viewDepth <= mCascadeSplits.y ? 1 :
+                        viewDepth <= mCascadeSplits.z ? 2 : 3;
+    return cascadeIndex;
+}
+
+float3 GetCascadeColor(uint cascadeIndex)
+{
+    float3 colors[4] = {
+        float3(1.0, 0.0, 0.0),
+        float3(1.0, 0.5, 0.0),
+        float3(1.0, 1.0, 0.0),
+        float3(0.0, 1.0, 0.0)
+    };
+    return colors[cascadeIndex];
+}
+
 float4 PS(PSInput pin) : SV_Target
 {
     float4 albedo = gAlbedoMap.Sample(gSampler, pin.TexC);
@@ -118,6 +140,18 @@ float4 PS(PSInput pin) : SV_Target
     }
 
     float3 result = float3(0, 0, 0);
+
+    if (mVisualizeCascades != 0)
+        {
+            if (gLightType == LIGHT_AMBIENT)
+            {
+                uint cascadeIndex = GetCascadeIndex(worldPos);
+                float3 debugColor = GetCascadeColor(cascadeIndex);
+
+                return float4(debugColor * (albedo.rgb * 0.4 + 0.6), 1.0f);
+            }
+            return float4(0.0f, 0.0f, 0.0f, 0.0f);
+        }
 
     // Расчет освещения в зависимости от типа
     if (gLightType == LIGHT_AMBIENT)
@@ -165,3 +199,5 @@ float4 PS(PSInput pin) : SV_Target
 
     return float4(result, 0.0f);
 }
+
+
